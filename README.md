@@ -28,7 +28,8 @@ is a double that is exactly the integer written, so a literal beyond ±(2^53 −
 
 What is trusted rather than proved:
 
-- the parser, LScript/Parse.lean;
+- the parser, LScript/Parse.lean, and the native `lscript` binary Lean and clang build from the proved
+  functions, unless you ask for a certificate (below);
 - the model of the emitted JavaScript, LScript/JS.lean, which `test/v8.mjs` checks against Node;
 - the printer, `JS.render`, which `test/run.sh` checks by running every accepted program;
 - the built-ins the emitted code calls, so far only `Object.freeze`. Code that runs before the module
@@ -57,14 +58,25 @@ the new object holds exactly the record's fields and never whatever else the old
 Every record is frozen when it is made, so code that imports one can't write, add or delete a field,
 or change its prototype: V8 throws, and the value stays what it was declared. A value can't be named
 `Object`, which would shadow the `Object.freeze` the emitted code calls.
-A record's fields, and an update's new values, are literals or names: every intermediate value has a
-name. `type` and `with` are keywords only where the grammar puts them, as TypeScript
+A record's fields, and an update's new values, are literals or names, as in
+`{ order with status: "shipped" }`; a nested record or a field read gets its own declaration first. `type` and `with` are keywords only where the grammar puts them, as TypeScript
 treats `type`, so `type: Int = 1` and `{ type: "click" }` parse; and a field label may be any
 identifier JavaScript allows as a property name, reserved words such as `class` included.
 
 `compile_sound` now says a record's value is a frozen object whose own fields are exactly the declared
 ones, each of its declared type, so no field read the checker accepts gives `undefined`. Two records with
 the same fields are different types. Functions come in slice 3, with values from outside.
+
+## Certificates
+
+`lscript --certificate F.ls` writes `F.cert.lean` next to `F.mjs`. It holds the text of both files and
+two theorems. `compiled`: Lean's kernel runs the proved parser and compiler on the source text and
+checks that the program is accepted and its JavaScript prints as exactly the output text. `sound`: so
+that module satisfies `compile_sound`. From this repository, `lake env lean path/to/F.cert.lean` checks
+it in about a second; a changed byte in either text makes it fail. A checked certificate means that
+run rests on neither the parser nor the binary, only on the model of V8. Every function in
+LScript/Parse.lean is total for this reason: the kernel can run it. `test/run.sh` checks a certificate
+for every accepted program and refuses one with its output changed.
 
 ## Checks
 
@@ -111,6 +123,8 @@ Lean 4.22.0 (`lean-toolchain`), no Mathlib.
 ```
 lake build                    # the compiler, and every proof
 .lake/build/bin/lscript F.ls  # writes F.mjs, or says why F.ls is rejected
-test/run.sh                   # accepted and rejected programs, run in Node, and the model against V8
+.lake/build/bin/lscript --certificate F.ls   # also writes F.cert.lean
+lake env lean F.cert.lean     # Lean's kernel checks that run
+test/run.sh                   # accepted and rejected programs, run in Node, certificates, and the model against V8
 node test/checks.mjs          # every check against its kind: fired by a test, and refuting soundness when removed
 ```

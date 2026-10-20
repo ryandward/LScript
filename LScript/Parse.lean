@@ -3,8 +3,10 @@ import LScript.JS
 /-!
 # The parser
 
-Text to declarations. This is the one part of the compiler with no proof; `test/run.sh` runs it on
-every test program.
+Text to declarations. Every function here is total, so Lean's kernel can run the parser: a
+certificate (`lscript --certificate`) can then start from the source text itself. The lexer and the
+parser each take fuel, one unit per character or token; every step consumes at least one, so the fuel
+`parse` gives them always suffices, and running out is never reached.
 
     decl  := "type" Name "=" Type | "type" Name "=" "{" (label ":" Type),* "}" | name ":" Type "=" expr
     expr  := atom | name ("." label)+ | "{" (label ":" atom),* "}" | "{" name "with" (label ":" atom),* "}"
@@ -29,32 +31,50 @@ inductive Tok where
   | dot
   deriving Repr, DecidableEq
 
-partial def lex : List Char → Array Tok → Except String (Array Tok)
-  | [], acc => .ok acc
-  | c :: cs, acc =>
-    if c == ' ' || c == '\t' || c == '\n' || c == '\r' then lex cs acc
-    else if c == '/' && cs.head? == some '/' then lex (cs.dropWhile (· != '\n')) acc
-    else if c == ':' then lex cs (acc.push .colon)
-    else if c == '=' then lex cs (acc.push .eq)
-    else if c == '{' then lex cs (acc.push .lbrace)
-    else if c == '}' then lex cs (acc.push .rbrace)
-    else if c == ',' then lex cs (acc.push .comma)
-    else if c == '.' then lex cs (acc.push .dot)
+/-- A token as it is written, for messages. -/
+def Tok.show : Tok → String
+  | .ident s => s
+  | .int n => toString n
+  | .str s => "\"" ++ s ++ "\""
+  | .colon => ":"
+  | .eq => "="
+  | .lbrace => "{"
+  | .rbrace => "}"
+  | .comma => ","
+  | .dot => "."
+
+def isSpace (c : Char) : Bool := c == ' ' || c == '\t' || c == '\n' || c == '\r'
+
+/-- The number a run of decimal digits writes. -/
+def digitsValue (ds : List Char) : Nat := ds.foldl (fun n c => n * 10 + (c.toNat - '0'.toNat)) 0
+
+/-- Text to tokens, in reverse in `acc` until the end. -/
+def lex : Nat → List Char → List Tok → Except String (List Tok)
+  | _, [], acc => .ok acc.reverse
+  | 0, _ :: _, _ => .error "the lexer ran out of fuel"
+  | n + 1, c :: cs, acc =>
+    if isSpace c then lex n cs acc
+    else if c == '/' && cs.head? == some '/' then lex n (cs.dropWhile (· != '\n')) acc
+    else if c == ':' then lex n cs (.colon :: acc)
+    else if c == '=' then lex n cs (.eq :: acc)
+    else if c == '{' then lex n cs (.lbrace :: acc)
+    else if c == '}' then lex n cs (.rbrace :: acc)
+    else if c == ',' then lex n cs (.comma :: acc)
+    else if c == '.' then lex n cs (.dot :: acc)
     else if c == '"' then
       let body := cs.takeWhile (fun d => d != '"' && d != '\n')
       match cs.drop body.length with
-      | '"' :: rest => lex rest (acc.push (.str (String.mk body)))
+      | '"' :: rest => lex n rest (.str (String.mk body) :: acc)
       | _ => .error "a string literal is not closed on its line"
     else if c.isDigit || (c == '-' && (cs.head?.map Char.isDigit).getD false) then
       let neg := c == '-'
       let from_ := if neg then cs else c :: cs
       let digits := from_.takeWhile Char.isDigit
-      let n : Int := (String.mk digits).toNat!
-      lex (from_.drop digits.length) (acc.push (.int (if neg then -n else n)))
+      let v : Int := digitsValue digits
+      lex n (from_.drop digits.length) (.int (if neg then -v else v) :: acc)
     else if JS.isIdentStart c then
       let word := (c :: cs).takeWhile JS.isIdentRest
-      let w := String.mk word
-      lex ((c :: cs).drop word.length) (acc.push (.ident w))
+      lex n ((c :: cs).drop word.length) (.ident (String.mk word) :: acc)
     else .error s!"unexpected character {repr c}"
 
 def tyNameOf (s : String) : TyName :=
@@ -66,39 +86,42 @@ def atom : P Atom
   | .int n :: rest => .ok (.int n, rest)
   | .str s :: rest => .ok (.str s, rest)
   | .ident x :: rest => .ok (.var x, rest)
-  | t :: _ => .error s!"expected a literal or a name, at {repr t}"
+  | .lbrace :: _ => .error "a field's value is a literal or a name, so give the nested record its own declaration first"
+  | t :: _ => .error s!"expected a literal or a name, at {t.show}"
   | [] => .error "expected a literal or a name, at the end"
 
 /-- `label: item, ...}` after the opening brace, through the closing one. -/
-partial def fieldList {α : Type} (item : P α) : P (List (String × α))
-  | .rbrace :: rest => .ok ([], rest)
-  | .ident l :: .colon :: rest => do
+def fieldList {α : Type} (item : P α) : Nat → P (List (String × α))
+  | 0, _ => .error "the parser ran out of fuel"
+  | _ + 1, .rbrace :: rest => .ok ([], rest)
+  | n + 1, .ident l :: .colon :: rest => do
     let (x, rest) ← item rest
     match rest with
+    | .dot :: _ => .error s!"a field's value is a literal or a name, so give the read in {l} its own declaration first"
     | .comma :: rest => do
-      let (more, rest) ← fieldList item rest
+      let (more, rest) ← fieldList item n rest
       pure ((l, x) :: more, rest)
     | .rbrace :: rest => pure ([(l, x)], rest)
-    | t :: _ => .error s!"expected , or }, at {repr t}"
+    | t :: _ => .error s!"expected , or }, at {t.show}"
     | [] => .error "expected , or }, at the end"
-  | t :: _ => .error s!"expected label: ..., at {repr t}"
-  | [] => .error "a { is not closed"
+  | _ + 1, t :: _ => .error s!"expected label: ..., at {t.show}"
+  | _ + 1, [] => .error "a { is not closed"
 
 def tyItem : P TyName
   | .ident t :: rest => .ok (tyNameOf t, rest)
-  | t :: _ => .error s!"expected a type, at {repr t}"
+  | t :: _ => .error s!"expected a type, at {t.show}"
   | [] => .error "expected a type, at the end"
 
-partial def labels : List Tok → List String × List Tok
+def labels : List Tok → List String × List Tok
   | .dot :: .ident l :: rest => let (ls, rest) := labels rest; (l :: ls, rest)
   | rest => ([], rest)
 
-def expr : P Expr
+def expr (fuel : Nat) : P Expr
   | .lbrace :: .ident x :: .ident "with" :: rest => do
-    let (fs, rest) ← fieldList atom rest
+    let (fs, rest) ← fieldList atom fuel rest
     pure (.update x fs, rest)
   | .lbrace :: rest => do
-    let (fs, rest) ← fieldList atom rest
+    let (fs, rest) ← fieldList atom fuel rest
     pure (.record fs, rest)
   | .ident x :: rest =>
     let (ls, rest) := labels rest
@@ -107,20 +130,21 @@ def expr : P Expr
     let (a, rest) ← atom toks
     pure (.atom a, rest)
 
-partial def decls : List Tok → Except String (List Decl)
-  | [] => .ok []
-  | .ident "type" :: .ident r :: .eq :: .lbrace :: rest => do
-    let (fs, rest) ← fieldList tyItem rest
-    pure (.record r fs :: (← decls rest))
-  | .ident "type" :: .ident a :: .eq :: .ident t :: rest => do
-    pure (.alias a (tyNameOf t) :: (← decls rest))
-  | .ident x :: .colon :: .ident t :: .eq :: rest => do
-    let (e, rest) ← expr rest
-    pure (.val x (tyNameOf t) e :: (← decls rest))
-  | t :: _ => .error s!"expected `type Name = ...` or `name: Type = value`, at {repr t}"
+def decls : Nat → List Tok → Except String (List Decl)
+  | _, [] => .ok []
+  | 0, _ :: _ => .error "the parser ran out of fuel"
+  | n + 1, .ident "type" :: .ident r :: .eq :: .lbrace :: rest => do
+    let (fs, rest) ← fieldList tyItem n rest
+    pure (.record r fs :: (← decls n rest))
+  | n + 1, .ident "type" :: .ident a :: .eq :: .ident t :: rest => do
+    pure (.alias a (tyNameOf t) :: (← decls n rest))
+  | n + 1, .ident x :: .colon :: .ident t :: .eq :: rest => do
+    let (e, rest) ← expr n rest
+    pure (.val x (tyNameOf t) e :: (← decls n rest))
+  | _ + 1, t :: _ => .error s!"expected `type Name = ...` or `name: Type = value`, at {t.show}"
 
 def parse (src : String) : Except String Program :=
-  match lex src.toList #[] >>= fun toks => decls toks.toList with
+  match lex (src.length + 1) src.toList [] >>= fun toks => decls (toks.length + 1) toks with
   | .ok p => .ok p
   | .error e => .error s!"{e} [parse]"
 
