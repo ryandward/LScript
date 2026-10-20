@@ -3,10 +3,11 @@ import LScript.JS
 /-!
 # The parser
 
-Text to declarations. Every function here is total, so Lean's kernel can run the parser: a
-certificate (`lscript --certificate`) can then start from the source text itself. The lexer and the
-parser each take fuel, one unit per character or token; every step consumes at least one, so the fuel
-`parse` gives them always suffices, and running out is never reached.
+Text to declarations. Every function here is total, so Lean's kernel can run the parser, which is what
+lets `certify/check.sh` start from the source text itself. The lexer and the parser each take fuel, one
+unit per character or token. Every step consumes at least one, so the fuel `parse` gives them should
+always suffice; that is an argument, not yet a theorem. Running out returns an error, so it could only
+reject a program, never accept one.
 
     decl  := "type" Name "=" Type | "type" Name "=" "{" (label ":" Type),* "}" | name ":" Type "=" expr
     expr  := atom | name ("." label)+ | "{" (label ":" atom),* "}" | "{" name "with" (label ":" atom),* "}"

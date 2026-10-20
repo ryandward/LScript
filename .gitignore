@@ -1,5 +1,4 @@
 .lake/
-# compiled output and certificates, written next to each test program
+# compiled output, written next to each test program
 test/accept/*.mjs
-test/accept/*.cert.lean
 test/reject/*.mjs
