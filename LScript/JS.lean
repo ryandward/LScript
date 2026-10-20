@@ -5,10 +5,10 @@ import LScript.Scope
 # The JavaScript we emit, and a model of how V8 runs it
 
 The compiler emits a module of `const name = value;` lines, each exported or not, where a value is a
-literal, a name, a chain of property reads, an object literal of those, an arrow function, or a call
-of one expression with another.
-This file models exactly that fragment: what each line can evaluate to, and every way it can go wrong.
-`test/v8.mjs` checks the model against Node.
+literal, a name, a chain of property reads, an object literal of those, an arrow function, a call of
+one expression with another, or a conditional on one of the tests below. This file models exactly that
+fragment: what each line can evaluate to, and every way it can go wrong. `test/v8.mjs` checks the model
+against Node.
 
 * A name that isn't a JavaScript identifier, or is a reserved word, is a SyntaxError. A field label
   may be a reserved word: JavaScript allows those as property names.
@@ -39,6 +39,19 @@ This file models exactly that fragment: what each line can evaluate to, and ever
   a SyntaxError even if the function is never called. The model checks the body when it evaluates the
   arrow, which comes to the same thing: every line is evaluated in order, and a module that hits any
   error gives no claim.
+* The values `JSON.parse` returns (`IsJson`) are null, booleans, numbers, strings, arrays, and plain
+  objects that aren't frozen, each own key once: of two equal keys in the text, the last one stays, and
+  `"__proto__"` is an ordinary own key. A number is a safe integer, `-0`, or another double, which
+  includes `Infinity` for `1e400`. A string or a key may hold any UTF-16 code units; the model holds
+  each unit as one Lean character, the surrogates, which a Lean character can't be, as characters no
+  ASCII label is, and it never looks inside a foreign string.
+* Reading a property of `null` or `undefined` is a TypeError.
+* A conditional `(t ? a : b)` evaluates its test, then one branch. A test is
+  `typeof a === "string"`; `Number.isSafeInteger(a) && !Object.is(a, -0)`, which holds for a safe
+  integer and not for `-0`; a shape test, which holds for a plain object whose own keys are exactly the
+  given labels (`typeof`, `null`, `Array.isArray`, `Object.keys(a).length` and `Object.hasOwn`); or two
+  tests joined by `&&`, the second evaluated only if the first holds. These rest on the built-ins named
+  being the original ones.
 
 A call runs a body, so evaluation takes fuel, and a body runs with one unit less than its call: fuel
 bounds how deeply calls nest. `evalExpr_mono` and `runFrom_mono` prove that any other result stays the
@@ -59,11 +72,20 @@ inductive Atom where
   | path (x : String) (labels : List String)      -- x, x.l, x.l.m, …
   deriving Repr, DecidableEq
 
+/-- A test the emitted parse makes of a value. -/
+inductive Test where
+  | isStr (a : Atom)                              -- typeof a === "string"
+  | isInt (a : Atom)                              -- Number.isSafeInteger(a) && !Object.is(a, -0)
+  | isShape (a : Atom) (labels : List String)     -- a plain object whose own keys are exactly these
+  | and (t u : Test)                              -- t && u
+  deriving Repr, DecidableEq
+
 inductive Expr where
   | atom (a : Atom)
   | obj (fields : List (String × Atom))           -- { l: a, … }
   | arrow (param : String) (body : Expr)          -- (param) => body
   | app (f : Expr) (arg : Expr)                   -- f(arg)
+  | cond (t : Test) (a b : Expr)                  -- (t ? a : b)
   deriving Repr, DecidableEq
 
 /-- `export const name = e;`, or `const name = e;` when it isn't exported. -/
@@ -77,9 +99,14 @@ abbrev Program := List Decl
 
 inductive Val where
   | num (n : Int)                       -- a double that is exactly the integer n
-  | imprecise                           -- a double that is not the integer the literal wrote
+  | notInt                              -- a double that isn't a safe integer, nor -0
+  | negZero                             -- -0
   | str (s : String)
-  | obj (fields : List (String × Val)) (frozen : Bool)  -- an object whose own fields are exactly these
+  | bool (b : Bool)
+  | null
+  | undef                               -- undefined
+  | arr (items : List Val)              -- an array
+  | obj (fields : List (String × Val)) (frozen : Bool)  -- a plain object whose own fields are exactly these, each once
   | untracked                           -- a value the model doesn't track: see `readField`
   | clos (env : List (String × Val)) (param : String) (body : Expr)  -- an arrow function, and the names it sees
   deriving Repr
@@ -95,6 +122,7 @@ inductive Err where
   | reference (name : String)
   | unmodeled (msg : String)            -- V8 runs it, differently from what was written, or may
   | notCallable                         -- a TypeError: calling something that isn't a function
+  | nullRead (label : String)           -- a TypeError: reading a property of null or undefined
   | outOfFuel                           -- the model's own limit, not an error in V8
   deriving Repr, DecidableEq
 
@@ -102,6 +130,17 @@ inductive Err where
 def maxSafe : Int := 9007199254740991
 
 def isSafe (n : Int) : Bool := decide (-maxSafe ≤ n) && decide (n ≤ maxSafe)
+
+/-- The values `JSON.parse` returns. -/
+inductive IsJson : Val → Prop where
+  | null : IsJson .null
+  | bool {b} : IsJson (.bool b)
+  | int {n} : isSafe n = true → IsJson (.num n)
+  | negZero : IsJson .negZero
+  | notInt : IsJson .notInt
+  | str {s} : IsJson (.str s)
+  | arr {vs} : (∀ v ∈ vs, IsJson v) → IsJson (.arr vs)
+  | obj {fs} : (fs.map Prod.fst).Nodup → (∀ l v, lookup fs l = some v → IsJson v) → IsJson (.obj fs false)
 
 /-- Reserved words in an ES module, plus `eval` and `arguments`, which strict code can't bind. -/
 def reservedWords : List String :=
@@ -151,6 +190,8 @@ def validStr (s : String) : Bool :=
 def readField : Val → String → Except Err Val
   | .obj fs _, l => .ok ((lookup fs l).getD .untracked)
   | .untracked, l => .error (.unmodeled s!"reading {l} of a value the model doesn't track, which may be undefined")
+  | .null, l => .error (.nullRead l)
+  | .undef, l => .error (.nullRead l)
   | _, _ => .ok .untracked
 
 def readPath : Val → List String → Except Err Val
@@ -161,7 +202,7 @@ def readPath : Val → List String → Except Err Val
     | .error e => .error e
 
 def evalAtom (env : List (String × Val)) : Atom → Except Err Val
-  | .num n => .ok (if isSafe n then .num n else .imprecise)
+  | .num n => .ok (if isSafe n then .num n else .notInt)
   | .str s => if validStr s then .ok (.str s) else .error (.syntax s!"string literal {repr s} can't be printed as itself")
   | .path x ls =>
     if !ls.all identShape then .error (.syntax s!"a property read from {x} isn't an identifier")
@@ -178,11 +219,46 @@ def evalFields (env : List (String × Val)) : List (String × Atom) → Except E
     | .error e, _ => .error e
     | .ok _, .error e => .error e
 
+/-- `typeof v === "string"`. -/
+def isStrVal : Val → Except Err Bool
+  | .str _ => .ok true
+  | .untracked => .error (.unmodeled "typeof of a value the model doesn't track")
+  | _ => .ok false
+
+/-- `Number.isSafeInteger(v) && !Object.is(v, -0)`. -/
+def isIntVal : Val → Except Err Bool
+  | .num n => .ok (isSafe n)
+  | .untracked => .error (.unmodeled "testing a value the model doesn't track")
+  | _ => .ok false
+
+/-- `typeof v === "object" && v !== null && !Array.isArray(v) && Object.keys(v).length === n` and
+    `Object.hasOwn(v, l)` for each label: a plain object whose own keys are exactly the labels. -/
+def isShapeVal (ls : List String) : Val → Except Err Bool
+  | .obj fs _ => .ok (fs.length == ls.length && ls.all fun l => (lookup fs l).isSome)
+  | .untracked => .error (.unmodeled "testing a value the model doesn't track")
+  | _ => .ok false
+
+def evalTest (env : List (String × Val)) : Test → Except Err Bool
+  | .isStr a => evalAtom env a >>= isStrVal
+  | .isInt a => evalAtom env a >>= isIntVal
+  | .isShape a ls => evalAtom env a >>= isShapeVal ls
+  | .and t u =>
+    match evalTest env t with
+    | .ok true => evalTest env u
+    | .ok false => .ok false
+    | .error e => .error e
+
 /-- The text of an atom parses as that atom. -/
 def atomOk : Atom → Bool
   | .num _ => true
   | .str s => validStr s
   | .path x ls => validIdent x && ls.all identShape
+
+def testOk : Test → Bool
+  | .isStr a => atomOk a
+  | .isInt a => atomOk a
+  | .isShape a ls => atomOk a && ls.all validLabel
+  | .and t u => testOk t && testOk u
 
 /-- The text of an expression parses as that expression. -/
 def staticOk : Expr → Bool
@@ -190,6 +266,7 @@ def staticOk : Expr → Bool
   | .obj fs => (fs.map Prod.fst).all validLabel && fs.all (fun p => atomOk p.2)
   | .arrow x body => validIdent x && staticOk body
   | .app f a => staticOk f && staticOk a
+  | .cond t a b => testOk t && staticOk a && staticOk b
 
 /-- Evaluate an expression with `n` units of fuel. A call's function, its argument and its body each
     get one unit less, so fuel bounds how deeply evaluation nests. -/
@@ -218,6 +295,11 @@ def evalExpr : Nat → List (String × Val) → Expr → Except Err Val
         match fv with
         | .clos cenv x body => evalExpr n ((x, w) :: cenv) body
         | _ => .error .notCallable
+  | n + 1, env, .cond t a b =>
+    match evalTest env t with
+    | .ok true => evalExpr n env a
+    | .ok false => evalExpr n env b
+    | .error e => .error e
 
 /-- Run the module from an environment of names already declared, with `n` units of fuel per line. -/
 def runFrom (n : Nat) (env : List (String × Val)) : Program → Except Err (List (String × Val))
@@ -251,6 +333,15 @@ def renderAtom : Atom → String
   | .str s => "\"" ++ s ++ "\""
   | .path x ls => joinR (x :: ls.map (fun l => "." ++ l))
 
+def renderTest : Test → String
+  | .isStr a => "(typeof " ++ renderAtom a ++ " === \"string\")"
+  | .isInt a => "(Number.isSafeInteger(" ++ renderAtom a ++ ") && !Object.is(" ++ renderAtom a ++ ", -0))"
+  | .isShape a ls =>
+    let x := renderAtom a
+    "(typeof " ++ x ++ " === \"object\" && " ++ x ++ " !== null && !Array.isArray(" ++ x ++ ") && Object.keys(" ++ x ++
+      ").length === " ++ toString ls.length ++ joinR (ls.map fun l => " && Object.hasOwn(" ++ x ++ ", \"" ++ l ++ "\")") ++ ")"
+  | .and t u => "(" ++ renderTest t ++ " && " ++ renderTest u ++ ")"
+
 def renderExpr : Expr → String
   | .atom a => renderAtom a
   | .obj [] => "Object.freeze({})"
@@ -259,6 +350,11 @@ def renderExpr : Expr → String
   | .app f a => (match f with
       | .arrow _ _ => "(" ++ renderExpr f ++ ")"
       | _ => renderExpr f) ++ "(" ++ renderExpr a ++ ")"
+  | .cond t a b => "(" ++ renderTest t ++ " ? " ++ (match a with
+      | .arrow _ _ => "(" ++ renderExpr a ++ ")"
+      | _ => renderExpr a) ++ " : " ++ (match b with
+      | .arrow _ _ => "(" ++ renderExpr b ++ ")"
+      | _ => renderExpr b) ++ ")"
 
 /-- The text of the module. -/
 def render (p : Program) : String :=
@@ -278,6 +374,14 @@ theorem evalExpr_mono : ∀ (n : Nat) {env e r}, evalExpr n env e = r → r ≠ 
     | atom a => simpa [evalExpr] using h
     | obj fs => simpa [evalExpr] using h
     | arrow x body => simpa [evalExpr] using h
+    | cond t a b =>
+      simp only [evalExpr] at h ⊢
+      cases ht : evalTest env t with
+      | error e => simpa [ht] using h
+      | ok b' =>
+        cases b' with
+        | true => simp only [ht] at h ⊢; exact ih h hr m (by omega)
+        | false => simp only [ht] at h ⊢; exact ih h hr m (by omega)
     | app f a =>
       simp only [evalExpr] at h ⊢
       cases hf : evalExpr n env f with

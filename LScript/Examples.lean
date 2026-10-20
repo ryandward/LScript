@@ -41,6 +41,15 @@ def numAt (r : Except JS.Err (List (String × JS.Val))) (x : String) : Option In
 example : numAt (JS.run 3 curried) "r" = some 1 := by decide
 example : (match JS.run 1 curried with | .error .outOfFuel => true | _ => false) = true := by decide
 
+/-- The text of each test the parse makes, which `test/v8.mjs` runs in Node on the values `JSON.parse`
+    returns. -/
+example : JS.renderTest (.isStr (.path "v" [])) = "(typeof v === \"string\")" := rfl
+example : JS.renderTest (.isInt (.path "v" [])) = "(Number.isSafeInteger(v) && !Object.is(v, -0))" := rfl
+example : JS.renderTest (.isShape (.path "v" []) ["name", "age"]) =
+    "(typeof v === \"object\" && v !== null && !Array.isArray(v) && Object.keys(v).length === 2 && Object.hasOwn(v, \"name\") && Object.hasOwn(v, \"age\"))" := rfl
+example : JS.renderExpr (.cond (.isStr (.path "v" [])) (.arrow "x" (.atom (.path "x" []))) (.atom (.num 0))) =
+    "((typeof v === \"string\") ? ((x) => x) : 0)" := rfl
+
 /-- The real checker rejects every counterexample, so none of them is wrong here. -/
 example : counterexamples.all (fun e => (compile e.2).toOption.isNone && !wrong e.2) = true := by decide
 

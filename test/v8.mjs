@@ -106,5 +106,46 @@ const fnLib = join(dir, 'fn.mjs');
 writeFileSync(fnLib, 'const f = (x) => x;\nexport const r = f(1);\n');
 expect('an importer naming a const that isn\'t exported', outcome(`import { f } from ${JSON.stringify(fnLib)};\n`), 'run SyntaxError');
 
+// JSON: what JSON.parse returns, and the tests the parse makes of it. The test texts are the ones
+// Examples.lean pins as the printer's output.
+const J = (text) => JSON.parse(text);
+const run = (fn) => { try { return JSON.stringify(fn()) ?? 'undefined'; } catch (e) { return e.constructor.name; } };
+expect('JSON.parse("-0") is -0', run(() => Object.is(J('-0'), -0)), 'true');
+expect('JSON.parse("1e400") is Infinity', run(() => J('1e400') === Infinity), 'true');
+expect('JSON.parse makes "__proto__" an own key', run(() => Object.hasOwn(J('{"__proto__": 1}'), '__proto__')), 'true');
+expect('...and leaves the prototype alone', run(() => Object.getPrototypeOf(J('{"__proto__": 1}')) === Object.prototype), 'true');
+expect('...and reading it gives the parsed value', run(() => J('{"__proto__": 1}').__proto__), '1');
+expect('of two equal keys, the last stays, once', run(() => { const o = J('{"a": 1, "a": 2}'); return [o.a, Object.keys(o).length]; }), '[2,1]');
+expect('a lone surrogate parses into a one-unit string', run(() => { const s = J('"\\ud800"'); return [typeof s, s.length, s.charCodeAt(0)]; }), '["string",1,55296]');
+expect('JSON.parse makes plain objects, not frozen', run(() => { const o = J('{"a": 1}'); return [Object.getPrototypeOf(o) === Object.prototype, Object.isFrozen(o)]; }), '[true,false]');
+expect('JSON.parse makes arrays', run(() => Array.isArray(J('[1]'))), 'true');
+expect('reading a property of null', run(() => J('null').a), 'TypeError');
+expect('reading a property of undefined', run(() => undefined.a), 'TypeError');
+const test = (text, v) => run(() => new Function('v', `return ${text};`)(v));
+const isStr = '(typeof v === "string")';
+const isInt = '(Number.isSafeInteger(v) && !Object.is(v, -0))';
+const isShape = '(typeof v === "object" && v !== null && !Array.isArray(v) && Object.keys(v).length === 2 && Object.hasOwn(v, "name") && Object.hasOwn(v, "age"))';
+for (const [label, v, want] of [['"a"', 'a', 'true'], ['a lone surrogate', J('"\\ud800"'), 'true'], ['1', 1, 'false'], ['null', null, 'false'],
+    ['undefined', undefined, 'false'], ['{}', {}, 'false'], ['[]', [], 'false'], ['true', true, 'false']]) {
+  expect(`string test of ${label}`, test(isStr, v), want);
+}
+for (const [label, v, want] of [['1', 1, 'true'], ['0', 0, 'true'], ['9007199254740991', J('9007199254740991'), 'true'],
+    ['-9007199254740991', J('-9007199254740991'), 'true'], ['-0', J('-0'), 'false'], ['1e400', J('1e400'), 'false'],
+    ['1.5', J('1.5'), 'false'], ['9007199254740992', J('9007199254740992'), 'false'], ['"1"', '1', 'false'],
+    ['null', null, 'false'], ['true', true, 'false'], ['undefined', undefined, 'false']]) {
+  expect(`integer test of ${label}`, test(isInt, v), want);
+}
+for (const [label, v, want] of [['exactly name and age', J('{"name": "a", "age": 1}'), 'true'],
+    ['the same keys in another order', J('{"age": 1, "name": "a"}'), 'true'],
+    ['name twice and age', J('{"name": "a", "name": "b", "age": 1}'), 'true'],
+    ['a frozen record of them', Object.freeze({ name: 'a', age: 1 }), 'true'],
+    ['a missing key', J('{"name": "a"}'), 'false'], ['an extra key', J('{"name": "a", "age": 1, "x": 0}'), 'false'],
+    ['an extra "__proto__" key', J('{"name": "a", "age": 1, "__proto__": {}}'), 'false'],
+    ['an array', J('["a", 1]'), 'false'], ['null', null, 'false'], ['a string', 'name', 'false'], ['undefined', undefined, 'false']]) {
+  expect(`shape test of ${label}`, test(isShape, v), want);
+}
+expect('a conditional with an arrow branch', await moduleValue('const f = ((typeof "s" === "string") ? ((x) => x) : 0);\nexport const r = f(5);\n', 'r'), '5');
+expect('an arrow called where it is written', await moduleValue('export const r = ((x) => x)(5);\n', 'r'), '5');
+
 console.log(failed ? `${failed} disagreement(s) with the model` : 'the model agrees with Node');
 process.exit(failed ? 1 : 0);
