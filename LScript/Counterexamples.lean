@@ -24,7 +24,7 @@ def dataOfB : Nat → Recs → JS.Val → Ty → Bool
   | _ + 1, _, .num n, .int => JS.isSafe n
   | _ + 1, _, .str _, .str => true
   | n + 1, recs, .obj fs frozen, .record r =>
-    match lookup recs r with
+    match recs.find r with
     | none => false
     | some tfs =>
       frozen && fs.all (fun p => (lookup tfs p.1).isSome) &&
@@ -79,7 +79,7 @@ theorem valOfB_complete {recs : Recs} {v τ} (h : ValOf recs v τ) (n : Nat) : v
 /-- What `compile_sound` concludes for a program the compiler accepts. -/
 def Conclusion (p : Program) (out : JS.Program) : Prop :=
   ∃ ctx env, check p = .ok (ctx, out) ∧ (∃ n, JS.run n out = .ok env) ∧
-    (∀ x τ, lookup ctx.vals x = some τ → ∃ v, lookup env x = some v ∧ ValOf ctx.recs v τ) ∧
+    (∀ x τ, ctx.vals.find x = some τ → ∃ v, lookup env x = some v ∧ ValOf ctx.recs v τ) ∧
     ∀ d ∈ out, d.exported = true → ∃ v, lookup env d.name = some v ∧ JS.Data v
 
 /-- The fuel `wrong` runs a module with. Running out is no verdict: more fuel might finish it. -/
@@ -94,8 +94,8 @@ def wrong (p : Program) : Bool :=
     match JS.run wrongFuel out with
     | .error .outOfFuel => false
     | .error _ => true
-    | .ok env => ctx.vals.any fun q =>
-      match lookup ctx.vals q.1, lookup env q.1 with
+    | .ok env => out.any fun d =>
+      match ctx.vals.find d.name, lookup env d.name with
       | some τ, some v => !valOfB 100 ctx.recs v τ
       | some _, none => true
       | none, _ => false
@@ -129,11 +129,11 @@ theorem wrong_refutes {p : Program} (hw : wrong p = true) :
     rw [hbig] at this; cases this
     rw [hr] at hw
     simp only [List.any_eq_true] at hw
-    obtain ⟨q, _, hbad⟩ := hw
-    cases hl : lookup ctx.vals q.1 with
+    obtain ⟨d, _, hbad⟩ := hw
+    cases hl : ctx.vals.find d.name with
     | none => simp [hl] at hbad
     | some τ =>
-      obtain ⟨v, hv, hvt⟩ := hall q.1 τ hl
+      obtain ⟨v, hv, hvt⟩ := hall d.name τ hl
       simp only [hl, hv] at hbad
       have := valOfB_complete hvt 100
       simp [this] at hbad

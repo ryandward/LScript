@@ -10,7 +10,7 @@ the proof so that a build in which the proof no longer holds can still state it,
 
 namespace LScript
 
-abbrev Recs := List (String × List (String × Ty))
+abbrev Recs := Scope (List (String × Ty))
 
 /-- A JavaScript value is data of an LScript type: a safe integer, a string, or a frozen object with
     exactly the record's declared fields, each holding data of its declared type. A function type has
@@ -18,7 +18,7 @@ abbrev Recs := List (String × List (String × Ty))
 inductive DataOf (recs : Recs) : JS.Val → Ty → Prop where
   | int {n} : JS.isSafe n = true → DataOf recs (.num n) .int
   | str {s} : DataOf recs (.str s) .str
-  | obj {fs r tfs} : lookup recs r = some tfs →
+  | obj {fs r tfs} : recs.find r = some tfs →
       (∀ l, (lookup fs l).isSome = (lookup tfs l).isSome) →
       (∀ l v τ, lookup fs l = some v → lookup tfs l = some τ → DataOf recs v τ) →
       DataOf recs (.obj fs true) (.record r)
@@ -82,7 +82,7 @@ theorem lookup_isSome_keys {α β : Type} : ∀ {xs : List (String × α)} {ys :
     · simp [e]
     · simp only [e, if_false]; exact lookup_isSome_keys hrest
 
-theorem DataOf.mono {recs recs' : Recs} (hr : ∀ r tfs, lookup recs r = some tfs → lookup recs' r = some tfs)
+theorem DataOf.mono {recs recs' : Recs} (hr : ∀ r tfs, recs.find r = some tfs → recs'.find r = some tfs)
     {v τ} (h : DataOf recs v τ) : DataOf recs' v τ := by
   induction h with
   | int hs => exact .int hs

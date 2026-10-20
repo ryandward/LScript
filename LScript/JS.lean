@@ -1,4 +1,5 @@
 import LScript.Syntax
+import LScript.Scope
 
 /-!
 # The JavaScript we emit, and a model of how V8 runs it
@@ -118,8 +119,16 @@ def identShape (s : String) : Bool :=
   | [] => false
   | c :: cs => isIdentStart c && cs.all isIdentRest
 
+/-- The reserved words, as a `Scope`, so that checking a name costs Lean's kernel the length of the
+    name rather than a comparison with each reserved word. -/
+def reserved : Scope Unit := reservedWords.foldl (fun s w => s.insert w ()) .empty
+
 /-- A name a `const` can bind: the shape, and not reserved. -/
-def validIdent (s : String) : Bool := identShape s && !reservedWords.contains s
+def validIdent (s : String) : Bool := identShape s && (reserved.find s).isNone
+
+theorem validIdent_eq (s : String) : validIdent s = (identShape s && !reservedWords.contains s) := by
+  simp only [validIdent, reserved, Scope.find_foldl, Scope.find_empty]
+  cases reservedWords.contains s <;> rfl
 
 /-- Globals the emitted code calls. A module binding one of these names would shadow it. -/
 def emittedGlobals : List String := ["Object"]

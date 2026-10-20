@@ -26,7 +26,8 @@ def output : String := include_str_env% "LSCRIPT_OUTPUT"
 
 /-- Lean's kernel runs the proved parser and compiler on the source file: it parses, the checker
     accepts it, and its JavaScript prints as exactly the output file. -/
-theorem compiled : (parse source >>= compile).toOption.map JS.render = some output := by decide +kernel
+theorem compiled : (parse source >>= compile).toOption.map JS.render = some output :=
+  compilesTo_spec (by decide +kernel : compilesTo source output = true)
 
 /-- So the module in the output file runs without an error, and every name holds a value of its
     declared type. -/

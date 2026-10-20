@@ -121,6 +121,15 @@ time.
 It rebuilds the LScript library from the checkout's sources first, so an older build left in `.lake`
 isn't what gets checked, and it prints the commit it checked against, noting uncommitted changes.
 
+The check costs the kernel time and memory in proportion to the program, about 30 ms and 5 MB per line
+with Lean 4.22: 200 lines take 6 s and 2 GB, 1,600 lines 45 s and 8 GB, and 6,400 lines 205 s and
+30 GB. If Lean is killed for running out of memory, the check says so. The kernel evaluates every
+definition as written, without the faster code Lean compiles for it, so three things are written for
+it: the printer builds strings from the right, since appending onto a growing left side is quadratic;
+the checker's scopes are tries (LScript/Scope.lean), since looking names up in a list is quadratic and
+comparing strings is slow; and nothing the check runs recurses once per character, since that
+overflows the kernel's stack.
+
 A checked run doesn't rest on the parser, the `lscript` binary, or the C toolchain that built it. It
 rests on the printer and the model of V8 together, since `compile_sound` is about the program the
 printer prints and the step from that text to what V8 does is the model's; on `Object.freeze` being

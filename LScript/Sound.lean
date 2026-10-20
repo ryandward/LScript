@@ -24,23 +24,23 @@ namespace LScript
 
 /-- The checker's names are the module's names, and each holds a value of its type. -/
 def Agrees (ctx : Ctx) (env : List (String × JS.Val)) : Prop :=
-  (∀ x, (lookup ctx.vals x).isSome = (lookup env x).isSome) ∧
-  ∀ x τ, lookup ctx.vals x = some τ → ∃ v, lookup env x = some v ∧ ValOf ctx.recs v τ
+  (∀ x, (ctx.vals.find x).isSome = (lookup env x).isSome) ∧
+  ∀ x τ, ctx.vals.find x = some τ → ∃ v, lookup env x = some v ∧ ValOf ctx.recs v τ
 
 /-- A type in scope refers only to declared records. -/
 def TyOk (recs : Recs) : Ty → Prop
   | .int => True
   | .str => True
-  | .record r => (lookup recs r).isSome
+  | .record r => (recs.find r).isSome
   | .fn a b => TyOk recs a ∧ TyOk recs b
 
-theorem TyOk.mono {recs recs' : Recs} (hr : ∀ r tfs, lookup recs r = some tfs → lookup recs' r = some tfs) :
+theorem TyOk.mono {recs recs' : Recs} (hr : ∀ r tfs, recs.find r = some tfs → recs'.find r = some tfs) :
     ∀ {t}, TyOk recs t → TyOk recs' t
   | .int, _ => trivial
   | .str, _ => trivial
   | .record r, h => by
     simp only [TyOk] at h ⊢
-    cases hl : lookup recs r with
+    cases hl : recs.find r with
     | none => rw [hl] at h; cases h
     | some tfs => rw [hr r tfs hl]; rfl
   | .fn a b, h => by
@@ -52,49 +52,49 @@ theorem TyOk.mono {recs recs' : Recs} (hr : ∀ r tfs, lookup recs r = some tfs 
     emitted object can carry; every type in scope refers only to declared records; every record's
     fields are data; and every value's name is an identifier. -/
 structure DeclsOk (ctx : Ctx) : Prop where
-  recsTyped : ∀ r, (lookup ctx.recs r).isSome → (lookup ctx.types r).isSome
-  labels : ∀ r tfs, lookup ctx.recs r = some tfs → labelsOk (tfs.map Prod.fst) = true
-  types : ∀ a t, lookup ctx.types a = some t → TyOk ctx.recs t
-  vals : ∀ x t, lookup ctx.vals x = some t → TyOk ctx.recs t
-  fields : ∀ r tfs, lookup ctx.recs r = some tfs → ∀ l t, lookup tfs l = some t → TyOk ctx.recs t
-  data : ∀ r tfs, lookup ctx.recs r = some tfs → ∀ l t, lookup tfs l = some t → isData t = true
-  idents : ∀ x t, lookup ctx.vals x = some t → JS.validIdent x = true
+  recsTyped : ∀ r, (ctx.recs.find r).isSome → (ctx.types.find r).isSome
+  labels : ∀ r tfs, ctx.recs.find r = some tfs → labelsOk (tfs.map Prod.fst) = true
+  types : ∀ a t, ctx.types.find a = some t → TyOk ctx.recs t
+  vals : ∀ x t, ctx.vals.find x = some t → TyOk ctx.recs t
+  fields : ∀ r tfs, ctx.recs.find r = some tfs → ∀ l t, lookup tfs l = some t → TyOk ctx.recs t
+  data : ∀ r tfs, ctx.recs.find r = some tfs → ∀ l t, lookup tfs l = some t → isData t = true
+  idents : ∀ x t, ctx.vals.find x = some t → JS.validIdent x = true
 
 /-- A function's body is checked with its parameter in scope. -/
 theorem DeclsOk.param {ctx x a} (hd : DeclsOk ctx) (hx : JS.validIdent x = true) (ha : TyOk ctx.recs a) :
-    DeclsOk { ctx with vals := (x, a) :: ctx.vals } where
+    DeclsOk { ctx with vals := ctx.vals.insert x a } where
   recsTyped := hd.recsTyped
   labels := hd.labels
   types := hd.types
   vals y t h := by
-    simp only [lookup_cons] at h
+    simp only [Scope.find_insert] at h
     by_cases e : x = y
     · simp only [e, if_true] at h; cases h; exact ha
     · simp only [e, if_false] at h; exact hd.vals y t h
   fields := hd.fields
   data := hd.data
   idents y t h := by
-    simp only [lookup_cons] at h
+    simp only [Scope.find_insert] at h
     by_cases e : x = y
     · subst e; exact hx
     · simp only [e, if_false] at h; exact hd.idents y t h
 
 theorem agrees_cons {ctx env x t v} (h : Agrees ctx env) (hv : ValOf ctx.recs v t) :
-    Agrees { ctx with vals := (x, t) :: ctx.vals } ((x, v) :: env) := by
+    Agrees { ctx with vals := ctx.vals.insert x t } ((x, v) :: env) := by
   refine ⟨fun y => ?_, fun y τ hy => ?_⟩
-  · simp only [lookup_cons]
+  · simp only [Scope.find_insert, lookup_cons]
     by_cases e : x = y
     · simp [e]
     · simp only [e, if_false]; exact h.1 y
-  · simp only [lookup_cons] at hy ⊢
+  · simp only [Scope.find_insert, lookup_cons] at hy ⊢
     by_cases e : x = y
     · simp only [e, if_true] at hy ⊢; cases hy; exact ⟨v, rfl, hv⟩
     · simp only [e, if_false] at hy ⊢; exact h.2 y τ hy
 
 /-- A record type in scope has its fields: the record it names was declared. -/
-theorem record_declared {recs : Recs} {r} (h : TyOk recs (.record r)) : ∃ tfs, lookup recs r = some tfs := by
+theorem record_declared {recs : Recs} {r} (h : TyOk recs (.record r)) : ∃ tfs, recs.find r = some tfs := by
   simp only [TyOk] at h
-  cases hl : lookup recs r with
+  cases hl : recs.find r with
   | none => rw [hl] at h; cases h
   | some tfs => exact ⟨tfs, rfl⟩
 
@@ -103,8 +103,8 @@ theorem record_declared {recs : Recs} {r} (h : TyOk recs (.record r)) : ∃ tfs,
 A function type's parameter is read the other way round from its result, so this is proved in both
 directions at once. -/
 
-theorem DataOf.ext_bwd {recs recs' : Recs} (hr : ∀ r tfs, lookup recs r = some tfs → lookup recs' r = some tfs)
-    (hc : ∀ r tfs, lookup recs r = some tfs → ∀ l t, lookup tfs l = some t → TyOk recs t)
+theorem DataOf.ext_bwd {recs recs' : Recs} (hr : ∀ r tfs, recs.find r = some tfs → recs'.find r = some tfs)
+    (hc : ∀ r tfs, recs.find r = some tfs → ∀ l t, lookup tfs l = some t → TyOk recs t)
     {v t} (h : DataOf recs' v t) : TyOk recs t → DataOf recs v t := by
   induction h with
   | int hs => intro _; exact .int hs
@@ -117,8 +117,8 @@ theorem DataOf.ext_bwd {recs recs' : Recs} (hr : ∀ r tfs, lookup recs r = some
     rw [hl] at h₁; cases h₁
     exact .obj hl₀ hk (fun l v τ h1 h2 => ih l v τ h1 h2 (hc r _ hl₀ l τ h2))
 
-theorem ValOf_ext {recs recs' : Recs} (hr : ∀ r tfs, lookup recs r = some tfs → lookup recs' r = some tfs)
-    (hc : ∀ r tfs, lookup recs r = some tfs → ∀ l t, lookup tfs l = some t → TyOk recs t) :
+theorem ValOf_ext {recs recs' : Recs} (hr : ∀ r tfs, recs.find r = some tfs → recs'.find r = some tfs)
+    (hc : ∀ r tfs, recs.find r = some tfs → ∀ l t, lookup tfs l = some t → TyOk recs t) :
     ∀ t, TyOk recs t → ∀ v, (ValOf recs v t ↔ ValOf recs' v t) := by
   intro t
   induction t with
@@ -171,7 +171,7 @@ theorem fieldsOfTy_label {ctx : Ctx} (hd : DeclsOk ctx) {t l τ} (h : lookup (fi
   cases t with
   | record r =>
     simp only [fieldsOfTy, fieldsOf] at h
-    cases hr : lookup ctx.recs r with
+    cases hr : ctx.recs.find r with
     | none => rw [hr] at h; simp [lookup] at h
     | some tfs =>
       rw [hr, Option.getD_some] at h
@@ -217,7 +217,7 @@ theorem inferAtom_static {ctx a t} (hd : DeclsOk ctx) (h : inferAtom ctx a = .ok
     · rename_i hs'; simpa [emitAtom, JS.atomOk] using hs'
   | var x =>
     simp only [inferAtom] at h
-    cases hx : lookup ctx.vals x with
+    cases hx : ctx.vals.find x with
     | none => simp [hx] at h
     | some τ => simp [emitAtom, JS.atomOk, hd.idents x τ hx]
 
@@ -280,7 +280,7 @@ theorem checkExpr_static : ∀ (e : Expr) {ctx τ je}, checkExpr ctx e τ = .ok 
   | path x ls =>
     intro ctx τ je h hd _
     simp only [checkExpr] at h
-    cases hx : lookup ctx.vals x with
+    cases hx : ctx.vals.find x with
     | none => simp [hx] at h
     | some t =>
       simp only [hx] at h
@@ -322,7 +322,7 @@ theorem checkExpr_static : ∀ (e : Expr) {ctx τ je}, checkExpr ctx e τ = .ok 
   | update x fs =>
     intro ctx τ je h hd _
     simp only [checkExpr] at h
-    cases hx : lookup ctx.vals x with
+    cases hx : ctx.vals.find x with
     | none => simp [hx] at h
     | some t =>
       simp only [hx] at h
@@ -363,7 +363,7 @@ theorem checkExpr_static : ∀ (e : Expr) {ctx τ je}, checkExpr ctx e τ = .ok 
       · rename_i hb'
         have hb : JS.bindable x = true := by simpa using hb'
         have hident : JS.validIdent x = true := by simp only [JS.bindable, Bool.and_eq_true] at hb; exact hb.1
-        cases hc : checkExpr { ctx with vals := (x, paramTy τ) :: ctx.vals } body (resultTy τ) with
+        cases hc : checkExpr { ctx with vals := ctx.vals.insert x (paramTy τ) } body (resultTy τ) with
         | error _ => simp [hc] at h
         | ok jb =>
           simp only [hc, Except.ok.injEq] at h; subst h
@@ -378,7 +378,7 @@ theorem checkExpr_static : ∀ (e : Expr) {ctx τ je}, checkExpr ctx e τ = .ok 
   | app f a more =>
     intro ctx τ je h hd _
     simp only [checkExpr] at h
-    cases hf : lookup ctx.vals f with
+    cases hf : ctx.vals.find f with
     | none => simp [hf] at h
     | some t =>
       simp only [hf] at h
@@ -417,7 +417,7 @@ theorem inferAtom_sound {ctx env a t} (h : inferAtom ctx a = .ok t) (ha : Agrees
       exact ⟨.str s, by simp [emitAtom, JS.evalAtom, hs], DataOf.str.valOf⟩
   | var x =>
     simp only [inferAtom] at h
-    cases hx : lookup ctx.vals x with
+    cases hx : ctx.vals.find x with
     | none => simp only [hx] at h; cases h
     | some τ =>
       simp only [hx] at h; cases h
@@ -536,7 +536,7 @@ theorem checkExpr_sound : ∀ (e : Expr) {ctx env τ je}, checkExpr ctx e τ = .
   | path x ls =>
     intro ctx env τ je h ha hd hτ
     simp only [checkExpr] at h
-    cases hx : lookup ctx.vals x with
+    cases hx : ctx.vals.find x with
     | none => simp [hx] at h
     | some t =>
       simp only [hx] at h
@@ -627,7 +627,7 @@ theorem checkExpr_sound : ∀ (e : Expr) {ctx env τ je}, checkExpr ctx e τ = .
   | update x fs =>
     intro ctx env τ je h ha hd hτ
     simp only [checkExpr] at h
-    cases hx : lookup ctx.vals x with
+    cases hx : ctx.vals.find x with
     | none => simp [hx] at h
     | some t =>
       simp only [hx] at h
@@ -711,7 +711,7 @@ theorem checkExpr_sound : ∀ (e : Expr) {ctx env τ je}, checkExpr ctx e τ = .
         have hident : JS.validIdent x = true := by simp only [JS.bindable, Bool.and_eq_true] at hb; exact hb.1
         have hglobal : JS.emittedGlobals.contains x = false := by
           simp only [JS.bindable, Bool.and_eq_true, Bool.not_eq_true'] at hb; exact hb.2
-        cases hc : checkExpr { ctx with vals := (x, paramTy τ) :: ctx.vals } body (resultTy τ) with
+        cases hc : checkExpr { ctx with vals := ctx.vals.insert x (paramTy τ) } body (resultTy τ) with
         | error _ => simp [hc] at h
         | ok jb =>
           simp only [hc, Except.ok.injEq] at h; subst h
@@ -731,7 +731,7 @@ theorem checkExpr_sound : ∀ (e : Expr) {ctx env τ je}, checkExpr ctx e τ = .
   | app f a more =>
     intro ctx env τ je h ha hd hτ
     simp only [checkExpr] at h
-    cases hf : lookup ctx.vals f with
+    cases hf : ctx.vals.find f with
     | none => simp [hf] at h
     | some t =>
       simp only [hf] at h
@@ -760,7 +760,7 @@ theorem resolve_tyOk {ctx} (hd : DeclsOk ctx) : ∀ {tn t}, resolve ctx.types tn
   | .str, _, h => by simp only [resolve] at h; cases h; trivial
   | .named a, _, h => by
     simp only [resolve] at h
-    cases hl : lookup ctx.types a with
+    cases hl : ctx.types.find a with
     | none => simp [hl] at h
     | some t' => simp only [hl] at h; cases h; exact hd.types a _ hl
   | .fn a b, _, h => by
@@ -775,7 +775,7 @@ theorem resolve_tyOk {ctx} (hd : DeclsOk ctx) : ∀ {tn t}, resolve ctx.types tn
         simp only [TyOk]
         exact ⟨resolve_tyOk hd ha, resolve_tyOk hd hb⟩
 
-theorem resolveFields_spec {types : List (String × Ty)} : ∀ (fs : List (String × TyName)) {tfs},
+theorem resolveFields_spec {types : Scope Ty} : ∀ (fs : List (String × TyName)) {tfs},
     resolveFields types fs = .ok tfs →
       tfs.map Prod.fst = fs.map Prod.fst ∧ ∀ p ∈ tfs, ∃ tn, resolve types tn = .ok p.2 := by
   intro fs
@@ -800,7 +800,7 @@ theorem resolveFields_spec {types : List (String × Ty)} : ∀ (fs : List (Strin
 
 theorem checkDecl_alias {ctx a rhs ctx' jd} (h : checkDecl ctx (.alias a rhs) = .ok (ctx', jd)) :
     jd = none ∧ ctx'.vals = ctx.vals ∧ ctx'.recs = ctx.recs ∧
-      ∃ t, resolve ctx.types rhs = .ok t ∧ ctx'.types = (a, t) :: ctx.types := by
+      ∃ t, resolve ctx.types rhs = .ok t ∧ ctx'.types = ctx.types.insert a t := by
   simp only [checkDecl] at h
   split at h
   · cases h
@@ -814,9 +814,9 @@ theorem checkDecl_alias {ctx a rhs ctx' jd} (h : checkDecl ctx (.alias a rhs) = 
         exact ⟨rfl, rfl, rfl, t, rfl, rfl⟩
 
 theorem checkDecl_record {ctx r fields ctx' jd} (h : checkDecl ctx (.record r fields) = .ok (ctx', jd)) :
-    jd = none ∧ ctx'.vals = ctx.vals ∧ lookup ctx.types r = none ∧ labelsOk (fields.map Prod.fst) = true ∧
+    jd = none ∧ ctx'.vals = ctx.vals ∧ ctx.types.find r = none ∧ labelsOk (fields.map Prod.fst) = true ∧
       ∃ tfs, resolveFields ctx.types fields = .ok tfs ∧ tfs.all (fun p => isData p.2) = true ∧
-        ctx'.recs = (r, tfs) :: ctx.recs ∧ ctx'.types = (r, .record r) :: ctx.types := by
+        ctx'.recs = ctx.recs.insert r tfs ∧ ctx'.types = ctx.types.insert r (.record r) := by
   simp only [checkDecl] at h
   split at h
   · cases h
@@ -840,14 +840,14 @@ theorem checkDecl_record {ctx r fields ctx' jd} (h : checkDecl ctx (.record r fi
               | true => rfl
               | false => rw [hb] at hdata; simp at hdata
             refine ⟨rfl, rfl, ?_, by simpa using hlab, tfs, rfl, hdata', rfl, rfl⟩
-            cases hl : lookup ctx.types r with
+            cases hl : ctx.types.find r with
             | none => rfl
             | some _ => simp [hl] at hfresh
 
 theorem checkDecl_val {ctx x tn e ctx' jd} (h : checkDecl ctx (.val x tn e) = .ok (ctx', jd)) :
-    JS.bindable x = true ∧ lookup ctx.vals x = none ∧ ctx'.recs = ctx.recs ∧ ctx'.types = ctx.types ∧
+    JS.bindable x = true ∧ ctx.vals.find x = none ∧ ctx'.recs = ctx.recs ∧ ctx'.types = ctx.types ∧
       ∃ τ je, resolve ctx.types tn = .ok τ ∧ checkExpr ctx e τ = .ok je ∧
-        ctx'.vals = (x, τ) :: ctx.vals ∧ jd = some ⟨x, je, isData τ⟩ := by
+        ctx'.vals = ctx.vals.insert x τ ∧ jd = some ⟨x, je, isData τ⟩ := by
   simp only [checkDecl] at h
   split at h
   · cases h
@@ -865,7 +865,7 @@ theorem checkDecl_val {ctx x tn e ctx' jd} (h : checkDecl ctx (.val x tn e) = .o
           simp only [hc, Except.ok.injEq, Prod.mk.injEq] at h
           obtain ⟨rfl, rfl⟩ := h
           refine ⟨by simpa using hv, ?_, rfl, rfl, τ, je, rfl, hc, rfl, rfl⟩
-          cases hl : lookup ctx.vals x with
+          cases hl : ctx.vals.find x with
           | none => rfl
           | some _ => simp [hl] at hfresh
 
@@ -903,12 +903,12 @@ theorem checkFrom_sound : ∀ (p : Program) {ctx ctx' js env}, checkFrom ctx p =
           have ha₁ : Agrees ctx₁ env := by unfold Agrees; rw [hvals, hrecs]; exact ha
           refine ih hrest ha₁ ⟨fun r' hs => ?_, fun r' tfs' h' => ?_, fun a' t' h' => ?_, fun y t' h' => ?_,
             fun r' tfs' h' => ?_, fun r' tfs' h' => ?_, fun y t' h' => ?_⟩
-          · rw [hrecs] at hs; rw [htypes, lookup_cons]
+          · rw [hrecs] at hs; rw [htypes, Scope.find_insert]
             by_cases e : a = r'
             · simp [e]
             · simp only [e, if_false]; exact hd.recsTyped r' hs
           · rw [hrecs] at h'; exact hd.labels r' tfs' h'
-          · rw [hrecs]; rw [htypes, lookup_cons] at h'
+          · rw [hrecs]; rw [htypes, Scope.find_insert] at h'
             by_cases e : a = a'
             · simp only [e, if_true] at h'; cases h'; exact ht
             · simp only [e, if_false] at h'; exact hd.types a' t' h'
@@ -918,13 +918,13 @@ theorem checkFrom_sound : ∀ (p : Program) {ctx ctx' js env}, checkFrom ctx p =
           · rw [hvals] at h'; exact hd.idents y t' h'
         | record r fields =>
           obtain ⟨rfl, hvals, hfresh, hlab, tfs, hres, hdata, hrecs, htypes⟩ := checkDecl_record hdec
-          have hnorec : lookup ctx.recs r = none := by
-            cases hl : lookup ctx.recs r with
+          have hnorec : ctx.recs.find r = none := by
+            cases hl : ctx.recs.find r with
             | none => rfl
             | some _ => have := hd.recsTyped r (by rw [hl]; rfl); rw [hfresh] at this; cases this
-          have hmono : ∀ r' tfs', lookup ctx.recs r' = some tfs' → lookup ctx₁.recs r' = some tfs' := by
+          have hmono : ∀ r' tfs', ctx.recs.find r' = some tfs' → ctx₁.recs.find r' = some tfs' := by
             intro r' tfs' hl
-            rw [hrecs, lookup_cons]
+            rw [hrecs, Scope.find_insert]
             have : r ≠ r' := fun e => by subst e; rw [hnorec] at hl; cases hl
             simp only [this, if_false]; exact hl
           have ha₁ : Agrees ctx₁ env := by
@@ -935,29 +935,29 @@ theorem checkFrom_sound : ∀ (p : Program) {ctx ctx' js env}, checkFrom ctx p =
           obtain ⟨hkeys, hresolved⟩ := resolveFields_spec fields hres
           refine ih hrest ha₁ ⟨fun r' hs => ?_, fun r' tfs' h' => ?_, fun a t' h' => ?_, fun y t' h' => ?_,
             fun r' tfs' h' l t' ht' => ?_, fun r' tfs' h' l t' ht' => ?_, fun y t' h' => ?_⟩
-          · rw [htypes, lookup_cons]
+          · rw [htypes, Scope.find_insert]
             by_cases e : r = r'
             · simp [e]
             · simp only [e, if_false]
-              rw [hrecs, lookup_cons] at hs; simp only [e, if_false] at hs
+              rw [hrecs, Scope.find_insert] at hs; simp only [e, if_false] at hs
               exact hd.recsTyped r' hs
-          · rw [hrecs, lookup_cons] at h'
+          · rw [hrecs, Scope.find_insert] at h'
             by_cases e : r = r'
             · simp only [e, if_true] at h'; cases h'; rw [hkeys]; exact hlab
             · simp only [e, if_false] at h'; exact hd.labels r' tfs' h'
-          · rw [htypes, lookup_cons] at h'
+          · rw [htypes, Scope.find_insert] at h'
             by_cases e : r = a
             · simp only [e, if_true] at h'; cases h'; subst e
-              simp only [TyOk]; rw [hrecs, lookup_cons]; simp
+              simp only [TyOk]; rw [hrecs, Scope.find_insert]; simp
             · simp only [e, if_false] at h'; exact TyOk.mono hmono (hd.types a t' h')
           · rw [hvals] at h'; exact TyOk.mono hmono (hd.vals y t' h')
-          · rw [hrecs, lookup_cons] at h'
+          · rw [hrecs, Scope.find_insert] at h'
             by_cases e : r = r'
             · simp only [e, if_true] at h'; cases h'
               obtain ⟨tn, htn⟩ := hresolved (l, t') (lookup_mem ht')
               exact TyOk.mono hmono (resolve_tyOk hd htn)
             · simp only [e, if_false] at h'; exact TyOk.mono hmono (hd.fields r' tfs' h' l t' ht')
-          · rw [hrecs, lookup_cons] at h'
+          · rw [hrecs, Scope.find_insert] at h'
             by_cases e : r = r'
             · simp only [e, if_true] at h'; cases h'
               exact List.all_eq_true.mp hdata (l, t') (lookup_mem ht')
@@ -981,13 +981,13 @@ theorem checkFrom_sound : ∀ (p : Program) {ctx ctx' js env}, checkFrom ctx p =
             · rw [hrecs] at hs; rw [htypes]; exact hd.recsTyped r' hs
             · rw [hrecs] at h'; exact hd.labels r' tfs' h'
             · rw [hrecs]; rw [htypes] at h'; exact hd.types a t' h'
-            · rw [hrecs]; rw [hvals, lookup_cons] at h'
+            · rw [hrecs]; rw [hvals, Scope.find_insert] at h'
               by_cases e' : x = y
               · simp only [e', if_true] at h'; cases h'; exact hτ
               · simp only [e', if_false] at h'; exact hd.vals y t' h'
             · rw [hrecs] at h' ⊢; exact hd.fields r' tfs' h'
             · rw [hrecs] at h'; exact hd.data r' tfs' h'
-            · rw [hvals, lookup_cons] at h'
+            · rw [hvals, Scope.find_insert] at h'
               by_cases e' : x = y
               · subst e'; exact hident
               · simp only [e', if_false] at h'; exact hd.idents y t' h'
@@ -1006,7 +1006,7 @@ theorem checkFrom_sound : ∀ (p : Program) {ctx ctx' js env}, checkFrom ctx p =
     module exports holds data, never a function. -/
 theorem compile_sound {p : Program} {out : JS.Program} (h : compile p = .ok out) :
     ∃ ctx env, check p = .ok (ctx, out) ∧ (∃ n, JS.run n out = .ok env) ∧
-      (∀ x τ, lookup ctx.vals x = some τ → ∃ v, lookup env x = some v ∧ ValOf ctx.recs v τ) ∧
+      (∀ x τ, ctx.vals.find x = some τ → ∃ v, lookup env x = some v ∧ ValOf ctx.recs v τ) ∧
       ∀ d ∈ out, d.exported = true → ∃ v, lookup env d.name = some v ∧ JS.Data v := by
   simp only [compile] at h
   cases hc : check p with
@@ -1015,11 +1015,11 @@ theorem compile_sound {p : Program} {out : JS.Program} (h : compile p = .ok out)
     obtain ⟨ctx, js⟩ := res
     simp only [hc, Except.ok.injEq] at h; subst h
     obtain ⟨n, env, hrun, ha, _, hexp⟩ := checkFrom_sound p (env := []) hc
-      ⟨fun _ => rfl, fun _ _ h => by simp [Ctx.empty, lookup] at h⟩
-      ⟨fun _ h => by simp [Ctx.empty, lookup] at h, fun _ _ h => by simp [Ctx.empty, lookup] at h,
-       fun _ _ h => by simp [Ctx.empty, lookup] at h, fun _ _ h => by simp [Ctx.empty, lookup] at h,
-       fun _ _ h => by simp [Ctx.empty, lookup] at h, fun _ _ h => by simp [Ctx.empty, lookup] at h,
-       fun _ _ h => by simp [Ctx.empty, lookup] at h⟩
+      ⟨fun _ => by simp [Ctx.empty, Scope.find_empty, lookup], fun _ _ h => by simp [Ctx.empty, Scope.find_empty] at h⟩
+      ⟨fun _ h => by simp [Ctx.empty, Scope.find_empty] at h, fun _ _ h => by simp [Ctx.empty, Scope.find_empty] at h,
+       fun _ _ h => by simp [Ctx.empty, Scope.find_empty] at h, fun _ _ h => by simp [Ctx.empty, Scope.find_empty] at h,
+       fun _ _ h => by simp [Ctx.empty, Scope.find_empty] at h, fun _ _ h => by simp [Ctx.empty, Scope.find_empty] at h,
+       fun _ _ h => by simp [Ctx.empty, Scope.find_empty] at h⟩
     exact ⟨ctx, env, rfl, ⟨n, hrun⟩, ha.2, hexp⟩
 
 /-- The names the program declares as values. -/
@@ -1030,7 +1030,7 @@ def valNames : Program → List String
 
 /-- Checking more declarations never forgets a value. -/
 theorem checkFrom_keeps : ∀ (p : Program) {ctx ctx' js}, checkFrom ctx p = .ok (ctx', js) →
-    ∀ x, (lookup ctx.vals x).isSome → (lookup ctx'.vals x).isSome := by
+    ∀ x, (ctx.vals.find x).isSome → (ctx'.vals.find x).isSome := by
   intro p
   induction p with
   | nil =>
@@ -1057,7 +1057,7 @@ theorem checkFrom_keeps : ∀ (p : Program) {ctx ctx' js}, checkFrom ctx p = .ok
         | record r fields => rw [(checkDecl_record hd).2.1]; exact hx
         | val y tn e =>
           obtain ⟨_, _, _, _, τ, _, _, _, hvals, _⟩ := checkDecl_val hd
-          rw [hvals, lookup_cons]
+          rw [hvals, Scope.find_insert]
           by_cases e : y = x
           · simp [e]
           · simp only [e, if_false]; exact hx
@@ -1065,7 +1065,7 @@ theorem checkFrom_keeps : ∀ (p : Program) {ctx ctx' js}, checkFrom ctx p = .ok
 /-- Every value the program declares is one the checker declared, so `compile_sound` covers every
     name in the source. -/
 theorem checkFrom_declares : ∀ (p : Program) {ctx ctx' js}, checkFrom ctx p = .ok (ctx', js) →
-    ∀ x, x ∈ valNames p → (lookup ctx'.vals x).isSome := by
+    ∀ x, x ∈ valNames p → (ctx'.vals.find x).isSome := by
   intro p
   induction p with
   | nil => intro _ _ _ _ x hx; simp [valNames] at hx
@@ -1090,7 +1090,7 @@ theorem checkFrom_declares : ∀ (p : Program) {ctx ctx' js}, checkFrom ctx p = 
           simp only [valNames, List.mem_cons] at hx
           rcases hx with rfl | hx
           · obtain ⟨_, _, _, _, τ, _, _, _, hvals, _⟩ := checkDecl_val hd
-            exact checkFrom_keeps ds hrest x (by rw [hvals]; simp [lookup_cons])
+            exact checkFrom_keeps ds hrest x (by rw [hvals]; simp [Scope.find_insert])
           · exact ih hrest x hx
 
 /-- `compile_sound` is the statement `Counterexamples.lean` refutes for a compiler missing a

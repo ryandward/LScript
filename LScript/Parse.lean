@@ -4,10 +4,11 @@ import LScript.JS
 # The parser
 
 Text to declarations. Every function here is total, so Lean's kernel can run the parser, which is what
-lets `certify/check.sh` start from the source text itself. The lexer and the parser each take fuel, one
-unit per character or token. Every step consumes at least one, so the fuel `parse` gives them should
-always suffice; that is an argument, not yet a theorem. Running out returns an error, so it could only
-reject a program, never accept one.
+lets `certify/check.sh` start from the source text itself. The lexer and the parser each take fuel, and
+every step consumes at least one character or token, so the fuel `parse` gives them, 2^64, is more than
+any file holds. Running out returns an error, so it could only reject a program, never accept one. The
+fuel is a constant rather than the file's length because the kernel computes `List.length` by
+recursing once per element, which overflows its stack on a file of a few thousand lines.
 
     decl  := "type" Name "=" type | "type" Name "=" "{" (label ":" type),* "}" | name ":" type "=" expr
     type  := Name | "(" type ")" | type "->" type                     -- the arrow groups to the right
@@ -211,8 +212,11 @@ def decls : Nat → List Tok → Except String (List Decl)
     | [] => .error "expected =, at the end"
   | _ + 1, t :: _ => .error s!"expected `type Name = ...` or `name: Type = value`, at {t.show}"
 
+/-- More steps than any file takes: each consumes a character or a token. -/
+def parseFuel : Nat := 2 ^ 64
+
 def parse (src : String) : Except String Program :=
-  match lex (src.length + 1) src.toList [] >>= fun toks => decls (toks.length + 1) toks with
+  match lex parseFuel src.toList [] >>= fun toks => decls parseFuel toks with
   | .ok p => .ok p
   | .error e => .error s!"{e} [parse]"
 

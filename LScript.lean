@@ -5,4 +5,5 @@ import LScript.Typing
 import LScript.Counterexamples
 import LScript.Sound
 import LScript.Parse
+import LScript.Certificate
 import LScript.Examples

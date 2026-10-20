@@ -30,11 +30,11 @@ to its kind.
 namespace LScript
 
 structure Ctx where
-  types : List (String × Ty)                     -- every type name declared so far, resolved
-  recs : List (String × List (String × Ty))      -- each record's fields, in declaration order
-  vals : List (String × Ty)                      -- values declared so far
+  types : Scope Ty                               -- every type name declared so far, resolved
+  recs : Scope (List (String × Ty))              -- each record's fields, in declaration order
+  vals : Scope Ty                                -- values declared so far
 
-def Ctx.empty : Ctx := ⟨[], [], []⟩
+def Ctx.empty : Ctx := ⟨.empty, .empty, .empty⟩
 
 def tyName : Ty → String
   | .int => "Int"
@@ -43,7 +43,7 @@ def tyName : Ty → String
   | .fn a b => (match a with | .fn _ _ => "(" ++ tyName a ++ ")" | _ => tyName a) ++ " -> " ++ tyName b
 
 /-- A record's declared fields. Every record type in scope was declared, so they are always there. -/
-def fieldsOf (ctx : Ctx) (r : String) : List (String × Ty) := (lookup ctx.recs r).getD []
+def fieldsOf (ctx : Ctx) (r : String) : List (String × Ty) := (ctx.recs.find r).getD []
 
 def isRecord : Ty → Bool
   | .record _ => true
@@ -73,11 +73,11 @@ def arrowTy : List Ty → Ty → Ty
   | [], τ => τ
   | t :: ts, τ => .fn t (arrowTy ts τ)
 
-def resolve (types : List (String × Ty)) : TyName → Except String Ty
+def resolve (types : Scope Ty) : TyName → Except String Ty
   | .int => .ok .int
   | .str => .ok .str
   | .named a =>
-    match lookup types a with
+    match types.find a with
     | some t => .ok t
     | none => .error s!"type {a} is not declared before this line [type-declared]"  -- check: type-declared (partial)
   | .fn a b =>
@@ -86,7 +86,7 @@ def resolve (types : List (String × Ty)) : TyName → Except String Ty
     | .error e, _ => .error e
     | .ok _, .error e => .error e
 
-def resolveFields (types : List (String × Ty)) : List (String × TyName) → Except String (List (String × Ty))
+def resolveFields (types : Scope Ty) : List (String × TyName) → Except String (List (String × Ty))
   | [] => .ok []
   | (l, tn) :: rest =>
     match resolve types tn, resolveFields types rest with
@@ -102,7 +102,7 @@ def inferAtom (ctx : Ctx) : Atom → Except String Ty
     if !JS.validStr s then .error s!"string literal {repr s} may hold only printable ASCII other than \" and \\ [string-printable]"  -- check: string-printable (load-bearing)
     else .ok .str
   | .var x =>
-    match lookup ctx.vals x with
+    match ctx.vals.find x with
     | some t => .ok t
     | none => .error s!"{x} is not declared before this line [name-declared]"  -- check: name-declared (partial)
 
@@ -159,7 +159,7 @@ def checkExpr (ctx : Ctx) (e : Expr) (τ : Ty) : Except String JS.Expr :=
       if t ≠ τ then .error s!"the value is {tyName t}, where {tyName τ} is declared [atom-type]"  -- check: atom-type (load-bearing)
       else .ok (.atom (emitAtom a))
   | .path x ls =>
-    match lookup ctx.vals x with
+    match ctx.vals.find x with
     | none => .error s!"{x} is not declared before this line [path-name-declared]"  -- check: path-name-declared (partial)
     | some t =>
       match fieldPath ctx t ls with
@@ -177,7 +177,7 @@ def checkExpr (ctx : Ctx) (e : Expr) (τ : Ty) : Except String JS.Expr :=
         if !((fieldsOfTy ctx τ).all fun p => (lookup fs p.1).isSome) then .error s!"{tyName τ} needs its field {missingField fs (fieldsOfTy ctx τ)} [literal-complete]"  -- check: literal-complete (load-bearing)
         else .ok (.obj (fs.map fun (l, a) => (l, emitAtom a)))
   | .update x fs =>
-    match lookup ctx.vals x with
+    match ctx.vals.find x with
     | none => .error s!"{x} is not declared before this line [update-name-declared]"  -- check: update-name-declared (partial)
     | some t =>
       if !isRecord t then .error s!"{x} is {tyName t}, which has no fields to update [update-record]"  -- check: update-record (load-bearing)
@@ -195,11 +195,11 @@ def checkExpr (ctx : Ctx) (e : Expr) (τ : Ty) : Except String JS.Expr :=
     if !isFn τ then .error s!"a function is not {tyName τ} [lambda-type]"  -- check: lambda-type (load-bearing)
     else if !JS.bindable x then .error s!"parameter {x} is reserved, or a global the emitted code calls [param-ident]"  -- check: param-ident (load-bearing)
     else
-      match checkExpr { ctx with vals := (x, paramTy τ) :: ctx.vals } body (resultTy τ) with
+      match checkExpr { ctx with vals := ctx.vals.insert x (paramTy τ) } body (resultTy τ) with
       | .ok jb => .ok (.arrow x jb)
       | .error err => .error err
   | .app f a more =>
-    match lookup ctx.vals f with
+    match ctx.vals.find f with
     | none => .error s!"{f} is not declared before this line [call-name-declared]"  -- check: call-name-declared (partial)
     | some t =>
       match inferArgs ctx (a :: more) with
@@ -214,30 +214,30 @@ def isBase (a : String) : Bool := a == "Int" || a == "String"
 def checkDecl (ctx : Ctx) : Decl → Except String (Ctx × Option JS.Decl)
   | .alias a rhs =>
     if isBase a then .error s!"{a} is a base type and can't be redeclared [alias-not-base]"  -- check: alias-not-base (policy)
-    else if (lookup ctx.types a).isSome then .error s!"type {a} is declared twice [alias-fresh]"  -- check: alias-fresh (policy)
+    else if (ctx.types.find a).isSome then .error s!"type {a} is declared twice [alias-fresh]"  -- check: alias-fresh (policy)
     else
       match resolve ctx.types rhs with
-      | .ok t => .ok ({ ctx with types := (a, t) :: ctx.types }, none)
+      | .ok t => .ok ({ ctx with types := ctx.types.insert a t }, none)
       | .error e => .error e
   | .record r fields =>
     if isBase r then .error s!"{r} is a base type and can't be redeclared [record-not-base]"  -- check: record-not-base (policy)
-    else if (lookup ctx.types r).isSome then .error s!"type {r} is declared twice [record-fresh]"  -- check: record-fresh (load-bearing)
+    else if (ctx.types.find r).isSome then .error s!"type {r} is declared twice [record-fresh]"  -- check: record-fresh (load-bearing)
     else if !labelsOk (fields.map Prod.fst) then .error s!"a field of {r} is declared twice, isn't an identifier, or is __proto__ [record-labels]"  -- check: record-labels (load-bearing)
     else
       match resolveFields ctx.types fields with
       | .ok tfs =>
         if !tfs.all (fun p => isData p.2) then .error s!"a field of {r} is a function, and a record holds only data [record-data]"  -- check: record-data (load-bearing)
-        else .ok ({ ctx with types := (r, .record r) :: ctx.types, recs := (r, tfs) :: ctx.recs }, none)
+        else .ok ({ ctx with types := ctx.types.insert r (.record r), recs := ctx.recs.insert r tfs }, none)
       | .error e => .error e
   | .val x tn e =>
     if !JS.bindable x then .error s!"{x} is reserved, or a global the emitted code calls [val-ident]"  -- check: val-ident (load-bearing)
-    else if (lookup ctx.vals x).isSome then .error s!"{x} is declared twice [val-fresh]"  -- check: val-fresh (load-bearing)
+    else if (ctx.vals.find x).isSome then .error s!"{x} is declared twice [val-fresh]"  -- check: val-fresh (load-bearing)
     else
       match resolve ctx.types tn with
       | .error err => .error err
       | .ok τ =>
         match checkExpr ctx e τ with
-        | .ok je => .ok ({ ctx with vals := (x, τ) :: ctx.vals }, some ⟨x, je, isData τ⟩)
+        | .ok je => .ok ({ ctx with vals := ctx.vals.insert x τ }, some ⟨x, je, isData τ⟩)
         | .error err => .error s!"{x}: {err}"
 
 def checkFrom (ctx : Ctx) : Program → Except String (Ctx × JS.Program)
