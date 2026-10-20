@@ -1,0 +1,6 @@
+export const largest = 9007199254740991;
+export const smallest = -9007199254740991;
+export const printable = " !#$%&'()*+,-./0123456789:;<=>?@ABCDEFGHIJKLMNOPQRSTUVWXYZ[]^_`abcdefghijklmnopqrstuvwxyz{|}~";
+export const async = 1;
+export const undefined = 0;
+export const again = largest;

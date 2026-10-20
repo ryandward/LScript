@@ -1,0 +1,10 @@
+name = "lscript"
+version = "0.1.0"
+defaultTargets = ["lscript"]
+
+[[lean_lib]]
+name = "LScript"
+
+[[lean_exe]]
+name = "lscript"
+root = "Main"

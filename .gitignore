@@ -1,0 +1,3 @@
+.lake/
+*.mjs
+!test/v8.mjs
