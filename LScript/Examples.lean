@@ -25,7 +25,7 @@ example : JS.render ((compile users).toOption.getD []) =
     ignores its argument, so `k(1)(2)` is 1. This is the text `test/v8.mjs` runs in Node. -/
 def curried : JS.Program :=
   [⟨"k", .arrow "x" (.arrow "y" (.atom (.path "x" []))), false⟩,
-   ⟨"r", .call (.path "k" []) (.num 1) [.num 2], true⟩]
+   ⟨"r", .app (.app (.atom (.path "k" [])) (.atom (.num 1))) (.atom (.num 2)), true⟩]
 
 example : JS.render curried = "const k = (x) => (y) => x;\nexport const r = k(1)(2);\n" := rfl
 
@@ -36,9 +36,9 @@ def numAt (r : Except JS.Err (List (String × JS.Val))) (x : String) : Option In
     | _ => none
   | .error _ => none
 
-/-- Each call takes a unit of fuel for its body: at fuel 2 the module finishes, and at fuel 1 the body
-    of `k` has none left. -/
-example : numAt (JS.run 2 curried) "r" = some 1 := by decide
+/-- Fuel bounds how deeply evaluation nests: `k(1)(2)` evaluates `k(1)` one level down, and `k` and
+    its body one further, so the module finishes at fuel 3 and runs out at fuel 1. -/
+example : numAt (JS.run 3 curried) "r" = some 1 := by decide
 example : (match JS.run 1 curried with | .error .outOfFuel => true | _ => false) = true := by decide
 
 /-- The real checker rejects every counterexample, so none of them is wrong here. -/

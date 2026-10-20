@@ -140,6 +140,11 @@ def emitAtom : Atom → JS.Atom
   | .str s => .str s
   | .var x => .path x []
 
+/-- `f(a)(b)…`: the function applied to one argument at a time. -/
+def emitCall (f : JS.Expr) : List Atom → JS.Expr
+  | [] => f
+  | a :: rest => emitCall (.app f (.atom (emitAtom a))) rest
+
 /-- Labels a record may declare: identifiers, not `__proto__`, none twice. -/
 def labelsOk (ls : List String) : Bool := ls.all JS.validLabel && decide ls.Nodup
 
@@ -206,7 +211,7 @@ def checkExpr (ctx : Ctx) (e : Expr) (τ : Ty) : Except String JS.Expr :=
       | .error err => .error err
       | .ok ts =>
         if t ≠ arrowTy ts τ then .error s!"{f} is {tyName t}, and this call needs {tyName (arrowTy ts τ)} [call-type]"  -- check: call-type (load-bearing)
-        else .ok (.call (.path f []) (emitAtom a) (more.map emitAtom))
+        else .ok (emitCall (.atom (.path f [])) (a :: more))
 
 def isBase (a : String) : Bool := a == "Int" || a == "String"
 

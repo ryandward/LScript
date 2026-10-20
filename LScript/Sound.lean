@@ -221,13 +221,13 @@ theorem inferAtom_static {ctx a t} (hd : DeclsOk ctx) (h : inferAtom ctx a = .ok
     | none => simp [hx] at h
     | some τ => simp [emitAtom, JS.atomOk, hd.idents x τ hx]
 
-theorem inferArgs_static {ctx} (hd : DeclsOk ctx) : ∀ (as : List Atom) {ts}, inferArgs ctx as = .ok ts →
-    (as.map emitAtom).all JS.atomOk = true := by
+theorem emitCall_static {ctx} (hd : DeclsOk ctx) : ∀ (as : List Atom) {ts f}, inferArgs ctx as = .ok ts →
+    JS.staticOk f = true → JS.staticOk (emitCall f as) = true := by
   intro as
   induction as with
-  | nil => intro _ _; rfl
+  | nil => intro _ _ _ hf; exact hf
   | cons a rest ih =>
-    intro ts h
+    intro ts f h hf
     simp only [inferArgs] at h
     cases h₁ : inferAtom ctx a with
     | error _ => simp [h₁] at h
@@ -235,8 +235,8 @@ theorem inferArgs_static {ctx} (hd : DeclsOk ctx) : ∀ (as : List Atom) {ts}, i
       cases h₂ : inferArgs ctx rest with
       | error _ => simp [h₁, h₂] at h
       | ok ts' =>
-        simp only [List.map_cons, List.all_cons, Bool.and_eq_true]
-        exact ⟨inferAtom_static hd h₁, ih h₂⟩
+        apply ih h₂
+        simp only [JS.staticOk, hf, inferAtom_static hd h₁, Bool.and_self]
 
 theorem checkFields_spec {ctx t} : ∀ (fs : List (String × Atom)), checkFields ctx t fs = .ok () →
     ∀ l a, (l, a) ∈ fs → ∃ τ, lookup (fieldsOfTy ctx t) l = some τ ∧ inferAtom ctx a = .ok τ := by
@@ -389,10 +389,8 @@ theorem checkExpr_static : ∀ (e : Expr) {ctx τ je}, checkExpr ctx e τ = .ok 
         split at h
         · cases h
         · cases h
-          have hs := inferArgs_static hd (a :: more) hargs
-          simp only [List.map_cons, List.all_cons, Bool.and_eq_true] at hs
-          have hfok : JS.atomOk (.path f []) = true := by simp [JS.atomOk, hd.idents f t hf]
-          simp only [JS.staticOk, hfok, hs.1, hs.2, Bool.and_self]
+          have hfok : JS.staticOk (.atom (.path f [])) = true := by simp [JS.staticOk, JS.atomOk, hd.idents f t hf]
+          exact emitCall_static hd (a :: more) hargs hfok
 
 /-! ## Expressions -/
 
@@ -483,18 +481,17 @@ theorem evalExpr_obj {n} {env : List (String × JS.Val)} {fs : List (String × J
 
 /-- Applying a function value to arguments the checker typed, one at a time, gives a value of the type
     left after them, given enough fuel for every body. -/
-theorem apply_sound {ctx env} (ha : Agrees ctx env) : ∀ (as : List Atom) {ts fv τ}, inferArgs ctx as = .ok ts →
-    ValOf ctx.recs fv (arrowTy ts τ) →
-    ∃ ws N r, JS.evalArgs env (as.map emitAtom) = .ok ws ∧
-      JS.applyAll (fun env' e' => JS.evalExpr N env' e') (.ok fv) ws = .ok r ∧ ValOf ctx.recs r τ := by
+theorem apply_sound {ctx env} (ha : Agrees ctx env) : ∀ (as : List Atom) {ts f fv τ n₀},
+    inferArgs ctx as = .ok ts → JS.evalExpr n₀ env f = .ok fv → ValOf ctx.recs fv (arrowTy ts τ) →
+    ∃ N r, JS.evalExpr N env (emitCall f as) = .ok r ∧ ValOf ctx.recs r τ := by
   intro as
   induction as with
   | nil =>
-    intro ts fv τ h hf
+    intro ts f fv τ n₀ h hf hfv
     simp only [inferArgs, Except.ok.injEq] at h; subst h
-    exact ⟨[], 0, fv, rfl, by simp [JS.applyAll], hf⟩
+    exact ⟨n₀, fv, hf, hfv⟩
   | cons a rest ih =>
-    intro ts fv τ h hf
+    intro ts f fv τ n₀ h hf hfv
     simp only [inferArgs] at h
     cases h₁ : inferAtom ctx a with
     | error _ => simp [h₁] at h
@@ -503,15 +500,17 @@ theorem apply_sound {ctx env} (ha : Agrees ctx env) : ∀ (as : List Atom) {ts f
       | error _ => simp [h₁, h₂] at h
       | ok ts' =>
         simp only [h₁, h₂, Except.ok.injEq] at h; subst h
-        simp only [arrowTy, ValOf] at hf
-        obtain ⟨cenv, x, body, rfl, hbody⟩ := hf
+        simp only [arrowTy, ValOf] at hfv
+        obtain ⟨cenv, x, body, rfl, hbody⟩ := hfv
         obtain ⟨w₀, hw₀, hw₀t⟩ := inferAtom_sound h₁ ha
         obtain ⟨n₁, r₁, hr₁, hr₁t⟩ := hbody w₀ hw₀t
-        obtain ⟨ws, N₂, r, hws, happ, hrt⟩ := ih h₂ hr₁t
-        refine ⟨w₀ :: ws, max n₁ N₂, r, by simp [JS.evalArgs, hw₀, hws], ?_, hrt⟩
-        simp only [JS.applyAll]
-        rw [JS.evalExpr_mono n₁ hr₁ (by simp) _ (Nat.le_max_left _ _)]
-        exact JS.applyAll_mono (fun _ _ _ h₁ h₂ => JS.evalExpr_mono N₂ h₁ h₂ _ (Nat.le_max_right _ _)) ws happ (by simp)
+        -- One unit of fuel more than the function, its argument and the body each need.
+        obtain ⟨M, hM⟩ : ∃ M, max (max n₀ n₁) 1 = M + 1 := ⟨max (max n₀ n₁) 1 - 1, by omega⟩
+        have hf' := JS.evalExpr_mono n₀ hf (by simp) (M + 1) (by omega)
+        have hr₁' := JS.evalExpr_mono n₁ hr₁ (by simp) (M + 1) (by omega)
+        have happ : JS.evalExpr (M + 2) env (.app f (.atom (emitAtom a))) = .ok r₁ := by
+          simp only [JS.evalExpr, hf', hw₀, hr₁']
+        exact ih h₂ happ hr₁t
 
 /-- What the checker accepts against a type in scope, the emitted JavaScript evaluates to a value
     of it, given enough fuel. -/
@@ -746,12 +745,9 @@ theorem checkExpr_sound : ∀ (e : Expr) {ctx env τ je}, checkExpr ctx e τ = .
           cases h
           obtain ⟨fv, hfv, hfvt⟩ := ha.2 f t hf
           rw [ht] at hfvt
-          obtain ⟨ws, N, r, hws, happ, hr⟩ := apply_sound ha (a :: more) hargs hfvt
-          refine ⟨N + 1, r, ?_, hr⟩
-          have hfa : JS.evalAtom env (.path f []) = .ok fv := by simp [JS.evalAtom, hfv, JS.readPath]
-          simp only [List.map_cons] at hws
-          simp only [JS.evalExpr, hfa, hws]
-          exact happ
+          have hfa : JS.evalExpr 1 env (.atom (.path f [])) = .ok fv := by
+            simp [JS.evalExpr, JS.evalAtom, hfv, JS.readPath]
+          exact apply_sound ha (a :: more) hargs hfa hfvt
 
 /-! ## Declarations -/
 

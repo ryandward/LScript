@@ -5,7 +5,8 @@ import LScript.Scope
 # The JavaScript we emit, and a model of how V8 runs it
 
 The compiler emits a module of `const name = value;` lines, each exported or not, where a value is a
-literal, a name, a chain of property reads, an object literal of those, an arrow function, or a call.
+literal, a name, a chain of property reads, an object literal of those, an arrow function, or a call
+of one expression with another.
 This file models exactly that fragment: what each line can evaluate to, and every way it can go wrong.
 `test/v8.mjs` checks the model against Node.
 
@@ -62,7 +63,7 @@ inductive Expr where
   | atom (a : Atom)
   | obj (fields : List (String × Atom))           -- { l: a, … }
   | arrow (param : String) (body : Expr)          -- (param) => body
-  | call (f : Atom) (arg : Atom) (more : List Atom)  -- f(arg)(a₂)…: at least one argument
+  | app (f : Expr) (arg : Expr)                   -- f(arg)
   deriving Repr, DecidableEq
 
 /-- `export const name = e;`, or `const name = e;` when it isn't exported. -/
@@ -177,14 +178,6 @@ def evalFields (env : List (String × Val)) : List (String × Atom) → Except E
     | .error e, _ => .error e
     | .ok _, .error e => .error e
 
-def evalArgs (env : List (String × Val)) : List Atom → Except Err (List Val)
-  | [] => .ok []
-  | a :: rest =>
-    match evalAtom env a, evalArgs env rest with
-    | .ok v, .ok vs => .ok (v :: vs)
-    | .error e, _ => .error e
-    | .ok _, .error e => .error e
-
 /-- The text of an atom parses as that atom. -/
 def atomOk : Atom → Bool
   | .num _ => true
@@ -196,16 +189,10 @@ def staticOk : Expr → Bool
   | .atom a => atomOk a
   | .obj fs => (fs.map Prod.fst).all validLabel && fs.all (fun p => atomOk p.2)
   | .arrow x body => validIdent x && staticOk body
-  | .call f a more => atomOk f && atomOk a && more.all atomOk
+  | .app f a => staticOk f && staticOk a
 
-/-- Apply a function value to each argument in turn, running each body with `ev`. -/
-def applyAll (ev : List (String × Val) → Expr → Except Err Val) : Except Err Val → List Val → Except Err Val
-  | acc, [] => acc
-  | .ok (.clos cenv x body), w :: ws => applyAll ev (ev ((x, w) :: cenv) body) ws
-  | .ok _, _ :: _ => .error .notCallable
-  | .error e, _ :: _ => .error e
-
-/-- Evaluate an expression with `n` units of fuel: one per call. -/
+/-- Evaluate an expression with `n` units of fuel. A call's function, its argument and its body each
+    get one unit less, so fuel bounds how deeply evaluation nests. -/
 def evalExpr : Nat → List (String × Val) → Expr → Except Err Val
   | 0, _, _ => .error .outOfFuel
   | _ + 1, env, .atom a => evalAtom env a
@@ -221,11 +208,16 @@ def evalExpr : Nat → List (String × Val) → Expr → Except Err Val
     else if emittedGlobals.contains x then .error (.unmodeled s!"{x} shadows a global the emitted code calls")
     else if !staticOk body then .error (.syntax "the body of an arrow function isn't valid syntax")
     else .ok (.clos env x body)
-  | n + 1, env, .call f a more =>
-    match evalAtom env f, evalArgs env (a :: more) with
-    | .ok fv, .ok vs => applyAll (fun env' e' => evalExpr n env' e') (.ok fv) vs
-    | .error e, _ => .error e
-    | .ok _, .error e => .error e
+  | n + 1, env, .app f a =>
+    match evalExpr n env f with
+    | .error e => .error e
+    | .ok fv =>
+      match evalExpr n env a with
+      | .error e => .error e
+      | .ok w =>
+        match fv with
+        | .clos cenv x body => evalExpr n ((x, w) :: cenv) body
+        | _ => .error .notCallable
 
 /-- Run the module from an environment of names already declared, with `n` units of fuel per line. -/
 def runFrom (n : Nat) (env : List (String × Val)) : Program → Except Err (List (String × Val))
@@ -264,43 +256,15 @@ def renderExpr : Expr → String
   | .obj [] => "Object.freeze({})"
   | .obj fs => "Object.freeze({ " ++ sepR ", " (fs.map fun (l, a) => l ++ ": " ++ renderAtom a) ++ " })"
   | .arrow x body => "(" ++ x ++ ") => " ++ renderExpr body
-  | .call f a more => renderAtom f ++ joinR ((a :: more).map fun b => "(" ++ renderAtom b ++ ")")
+  | .app f a => (match f with
+      | .arrow _ _ => "(" ++ renderExpr f ++ ")"
+      | _ => renderExpr f) ++ "(" ++ renderExpr a ++ ")"
 
 /-- The text of the module. -/
 def render (p : Program) : String :=
   joinR (p.map fun d => s!"{if d.exported then "export " else ""}const {d.name} = {renderExpr d.e};\n")
 
 /-! ## Fuel: any result other than running out stays the same with more fuel -/
-
-theorem applyAll_error (ev : List (String × Val) → Expr → Except Err Val) (e : Err) :
-    ∀ ws, applyAll ev (.error e) ws = .error e
-  | [] => rfl
-  | _ :: _ => rfl
-
-theorem applyAll_mono {ev₁ ev₂ : List (String × Val) → Expr → Except Err Val}
-    (h : ∀ env e r, ev₁ env e = r → r ≠ .error .outOfFuel → ev₂ env e = r) :
-    ∀ (ws : List Val) {acc r}, applyAll ev₁ acc ws = r → r ≠ .error .outOfFuel → applyAll ev₂ acc ws = r := by
-  intro ws
-  induction ws with
-  | nil => intro acc r h₁ _; simpa [applyAll] using h₁
-  | cons w ws ih =>
-    intro acc r h₁ h₂
-    cases acc with
-    | error e => simpa [applyAll] using h₁
-    | ok v =>
-      cases v with
-      | clos cenv x body =>
-        simp only [applyAll] at h₁ ⊢
-        cases hb : ev₁ ((x, w) :: cenv) body with
-        | error e =>
-          rw [hb, applyAll_error] at h₁
-          have he : Except.error e ≠ (Except.error .outOfFuel : Except Err Val) := by rw [h₁]; exact h₂
-          rw [h _ _ _ hb he, applyAll_error]; exact h₁
-        | ok r₁ =>
-          rw [hb] at h₁
-          rw [h _ _ _ hb (by simp)]
-          exact ih h₁ h₂
-      | _ => simpa [applyAll] using h₁
 
 theorem evalExpr_mono : ∀ (n : Nat) {env e r}, evalExpr n env e = r → r ≠ .error .outOfFuel →
     ∀ m, n ≤ m → evalExpr m env e = r := by
@@ -314,16 +278,26 @@ theorem evalExpr_mono : ∀ (n : Nat) {env e r}, evalExpr n env e = r → r ≠ 
     | atom a => simpa [evalExpr] using h
     | obj fs => simpa [evalExpr] using h
     | arrow x body => simpa [evalExpr] using h
-    | call f a more =>
+    | app f a =>
       simp only [evalExpr] at h ⊢
-      cases hf : evalAtom env f with
-      | error e => simpa [hf] using h
+      cases hf : evalExpr n env f with
+      | error e =>
+        simp only [hf] at h
+        rw [ih hf (by rw [h]; exact hr) m (by omega)]; exact h
       | ok fv =>
-        cases ha : evalArgs env (a :: more) with
-        | error e => simpa [hf, ha] using h
-        | ok vs =>
-          simp only [hf, ha] at h ⊢
-          exact applyAll_mono (fun env' e' r' h₁ h₂ => ih h₁ h₂ m (by omega)) vs h hr
+        simp only [hf] at h
+        rw [ih hf (by simp) m (by omega)]
+        cases ha : evalExpr n env a with
+        | error e =>
+          simp only [ha] at h
+          rw [ih ha (by rw [h]; exact hr) m (by omega)]; exact h
+        | ok w =>
+          simp only [ha] at h
+          rw [ih ha (by simp) m (by omega)]
+          cases fv
+          all_goals (try simp only at h ⊢)
+          case clos cenv x body => exact ih h hr m (by omega)
+          all_goals exact h
 
 theorem runFrom_mono : ∀ (ds : Program) {n env r}, runFrom n env ds = r → r ≠ .error .outOfFuel →
     ∀ m, n ≤ m → runFrom m env ds = r := by
