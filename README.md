@@ -76,19 +76,28 @@ Lean reads both files from disk, runs the proved parser and compiler on the sour
 that the program is accepted and that its JavaScript prints as exactly the output file; the module in
 it then satisfies `compile_sound`. The statement and the axiom check belong to `certify/Check.lean`,
 not to the compiler that wrote `F.mjs`, and it fails if the proof rests on anything but Lean's
-standard axioms. A line added to `F.mjs`, or a byte changed in `F.ls`, makes it fail. It takes about a
-second, and any pair can be checked at any time against the commit you trust; nothing needs keeping
-but the two files.
+standard axioms. A line added to `F.mjs`, or a byte changed in `F.ls`, makes it fail. It finds `F.mjs`
+beside the path it was given, as the compiler writes it, so a symlinked `F.ls` is checked against the
+output beside the link. Nothing needs keeping but the two files, and any pair can be checked at any
+time.
+
+The check is against a commit, and it prints which one. It refuses a checkout with uncommitted
+changes to tracked files, unless `LSCRIPT_ALLOW_DIRTY=1`, and then it says so. It rebuilds the LScript
+library from the checkout's sources first, so an older build left in `.lake` isn't what gets checked.
+`certify/check.sh --fresh F.ls` goes further: it builds the commit from a clean export, ignoring the
+checkout's build directory, so it doesn't rely on Lake's records of what is up to date. It takes as
+long as a full build.
 
 A checked run doesn't rest on the parser, the `lscript` binary, or the C toolchain that built it. It
 still rests on:
 
 - Lean's kernel, and the few lines in `certify/Check.lean` that read the two files;
-- this repository at the commit you check against: the check imports it, and a changed `JS.lean`
-  would let any run through;
+- the commit it prints, as built: from its sources by Lake, or from a clean export with `--fresh`;
 - the printer and the model of V8 together, since `compile_sound` is about the program the printer
   prints, and the step from that text to what V8 does is the model's;
 - `Object.freeze` being the built-in, and Node behaving as `test/v8.mjs` measures.
+
+It is about the bytes on disk when it ran: a file changed afterwards is a different file.
 
 ## Checks
 
@@ -136,6 +145,7 @@ Lean 4.22.0 (`lean-toolchain`), no Mathlib.
 lake build                    # the compiler, and every proof
 .lake/build/bin/lscript F.ls  # writes F.mjs, or says why F.ls is rejected
 certify/check.sh F.ls         # Lean's kernel checks that run, from F.ls and F.mjs on disk
+certify/check.sh --fresh F.ls # the same, against a clean build of the commit
 test/run.sh                   # accepted and rejected programs, run in Node and checked, and the model against V8
 node test/checks.mjs          # every check against its kind: fired by a test, and refuting soundness when removed
 ```
