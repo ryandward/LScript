@@ -14,6 +14,7 @@ given_out="${arg%.ls}.mjs"
 [ -f "$given_out" ] || { echo "no $given_out: compile $arg first"; exit 2; }
 src=$(realpath "$arg"); out=$(realpath "$given_out")
 lake=${LAKE:-lake}
+command -v "$lake" >/dev/null || { echo "$lake not found: put it on the PATH, or set LAKE=/path/to/lake"; exit 2; }
 cd "$(dirname "$0")/.."
 against=$(git rev-parse HEAD 2>/dev/null || echo "this checkout, which isn't a git repository")
 if git rev-parse HEAD >/dev/null 2>&1 && [ -n "$(git status --porcelain --untracked-files=no)" ]; then
