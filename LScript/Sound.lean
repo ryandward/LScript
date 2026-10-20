@@ -88,12 +88,29 @@ theorem inferAtom_sound {ctx env a t} (h : inferAtom ctx a = .ok t) (ha : Agrees
       obtain ⟨v, hv, hvt⟩ := ha.2 x _ hx
       exact ⟨v, by simp [emitAtom, JS.evalAtom, hv, JS.readPath], hvt⟩
 
-/-- Reading the fields a chain of types promises gives a value of the last type. -/
-theorem fieldPath_sound {ctx : Ctx} : ∀ (ls : List String) {t t' v},
-    fieldPath ctx t ls = .ok t' → ValOf ctx.recs v t → ValOf ctx.recs (JS.readPath v ls) t' := by
+theorem labelsOk_spec {ls : List String} (h : labelsOk ls = true) :
+    ls.all JS.validLabel = true ∧ ls.Nodup := by
+  simp only [labelsOk, Bool.and_eq_true, decide_eq_true_eq] at h
+  exact h
+
+theorem lookup_key {α : Type} {xs : List (String × α)} {l v} (h : lookup xs l = some v) : l ∈ xs.map Prod.fst :=
+  List.mem_map.mpr ⟨(l, v), lookup_mem h, rfl⟩
+
+/-- A label a record declares is one the emitted code can read with a dot. -/
+theorem declared_label_shape {ctx : Ctx} (hd : DeclsOk ctx) {r tfs l t} (hr : lookup ctx.recs r = some tfs)
+    (hl : lookup tfs l = some t) : JS.identShape l = true := by
+  have hv := List.all_eq_true.mp (labelsOk_spec (hd.labels r tfs hr)).1 l (lookup_key hl)
+  simp only [JS.validLabel, Bool.and_eq_true] at hv
+  exact hv.1
+
+/-- Reading the fields a chain of types promises gives a value of the last type, and every label read
+    is an identifier. -/
+theorem fieldPath_sound {ctx : Ctx} (hd : DeclsOk ctx) : ∀ (ls : List String) {t t' v},
+    fieldPath ctx t ls = .ok t' → ValOf ctx.recs v t →
+      ls.all JS.identShape = true ∧ ∃ w, JS.readPath v ls = .ok w ∧ ValOf ctx.recs w t' := by
   intro ls
   induction ls with
-  | nil => intro t t' v h hv; simp only [fieldPath] at h; cases h; exact hv
+  | nil => intro t t' v h hv; simp only [fieldPath] at h; cases h; exact ⟨rfl, v, rfl, hv⟩
   | cons l ls ih =>
     intro t t' v h hv
     simp only [fieldPath] at h
@@ -116,8 +133,11 @@ theorem fieldPath_sound {ctx : Ctx} : ∀ (ls : List String) {t t' v},
           | some w =>
             have hw := hp l w t₁ hfl hl
             have : JS.readPath (.obj fs true) (l :: ls) = JS.readPath w ls := by
-              simp [JS.readPath, List.foldl, JS.readField, hfl]
-            rw [this]; exact ih h hw
+              simp [JS.readPath, JS.readField, hfl]
+            obtain ⟨hls, w', hw', hw't⟩ := ih h hw
+            refine ⟨?_, w', by rw [this]; exact hw', hw't⟩
+            simp only [List.all_cons, Bool.and_eq_true]
+            exact ⟨declared_label_shape hd hr hl, hls⟩
 
 theorem checkFields_spec {ctx t} : ∀ (fs : List (String × Atom)), checkFields ctx t fs = .ok () →
     ∀ l a, (l, a) ∈ fs → ∃ τ, lookup (fieldsOfTy ctx t) l = some τ ∧ inferAtom ctx a = .ok τ := by
@@ -163,18 +183,10 @@ theorem evalFields_ok {env : List (String × JS.Val)} {Q : String → JS.Val →
     · simp only [e, if_true] at hl; cases hl; subst e; exact hq₀
     · simp only [e, if_false] at hl; exact hq l v hl
 
-theorem labelsOk_spec {ls : List String} (h : labelsOk ls = true) :
-    ls.all JS.validLabel = true ∧ ls.Nodup := by
-  simp only [labelsOk, Bool.and_eq_true, decide_eq_true_eq] at h
-  exact h
-
-theorem evalExpr_obj {env : List (String × JS.Val)} {fs : List (String × JS.Atom)} {vs}
+theorem evalExpr_obj {n} {env : List (String × JS.Val)} {fs : List (String × JS.Atom)} {vs}
     (hv : (fs.map Prod.fst).all JS.validLabel = true) (hn : (fs.map Prod.fst).Nodup)
-    (he : JS.evalFields env fs = .ok vs) : JS.evalExpr env (.obj fs) = .ok (.obj vs true) := by
+    (he : JS.evalFields env fs = .ok vs) : JS.evalExpr (n + 1) env (.obj fs) = .ok (.obj vs true) := by
   simp [JS.evalExpr, hv, hn, he]
-
-theorem lookup_key {α : Type} {xs : List (String × α)} {l v} (h : lookup xs l = some v) : l ∈ xs.map Prod.fst :=
-  List.mem_map.mpr ⟨(l, v), lookup_mem h, rfl⟩
 
 /-- A record type in scope has its fields: the record it names was declared. -/
 theorem record_declared {recs : Recs} {r} (h : TyOk recs (.record r)) : ∃ tfs, lookup recs r = some tfs := by
@@ -184,10 +196,10 @@ theorem record_declared {recs : Recs} {r} (h : TyOk recs (.record r)) : ∃ tfs,
   | some tfs => exact ⟨tfs, rfl⟩
 
 /-- What the checker accepts against a type in scope, the emitted JavaScript evaluates to a value
-    of it. -/
+    of it, given enough fuel. -/
 theorem checkExpr_sound {ctx env e τ je} (h : checkExpr ctx e τ = .ok je) (ha : Agrees ctx env)
     (hd : DeclsOk ctx) (hτ : TyOk ctx.recs τ) :
-    ∃ v, JS.evalExpr env je = .ok v ∧ ValOf ctx.recs v τ := by
+    ∃ n v, JS.evalExpr n env je = .ok v ∧ ValOf ctx.recs v τ := by
   cases e with
   | atom a =>
     simp only [checkExpr] at h
@@ -201,7 +213,7 @@ theorem checkExpr_sound {ctx env e τ je} (h : checkExpr ctx e τ = .ok je) (ha 
         have e : t = τ := by simpa using e'
         cases h; subst e
         obtain ⟨v, hv, hvt⟩ := inferAtom_sound hi ha
-        exact ⟨v, by simpa [JS.evalExpr] using hv, hvt⟩
+        exact ⟨1, v, by simpa [JS.evalExpr] using hv, hvt⟩
   | path x ls =>
     simp only [checkExpr] at h
     cases hx : lookup ctx.vals x with
@@ -218,7 +230,8 @@ theorem checkExpr_sound {ctx env e τ je} (h : checkExpr ctx e τ = .ok je) (ha 
           have e : t' = τ := by simpa using e'
           cases h; subst e
           obtain ⟨v, hv, hvt⟩ := ha.2 x t hx
-          exact ⟨JS.readPath v ls, by simp [JS.evalExpr, JS.evalAtom, hv], fieldPath_sound ls hp hvt⟩
+          obtain ⟨hls, w, hw, hwt⟩ := fieldPath_sound hd ls hp hvt
+          exact ⟨1, w, by simp [JS.evalExpr, JS.evalAtom, hls, hv, hw], hwt⟩
   | record fs =>
     simp only [checkExpr] at h
     split at h
@@ -270,7 +283,7 @@ theorem checkExpr_sound {ctx env e τ je} (h : checkExpr ctx e τ = .ok je) (ha 
                 obtain ⟨τ', hτ', hi⟩ := hspec l' a hm'
                 obtain ⟨v, hv, hvt⟩ := inferAtom_sound hi ha
                 exact ⟨v, hv, τ', hτ', hvt⟩)
-            refine ⟨.obj vs true, ?_, .obj hr (fun l => ?_) (fun l v τ' hv hτ' => ?_)⟩
+            refine ⟨1, .obj vs true, ?_, .obj hr (fun l => ?_) (fun l v τ' hv hτ' => ?_)⟩
             · have hv' : (efs.map Prod.fst).all JS.validLabel = true := by rw [hkeys₁]; exact hvalid
               have hn' : (efs.map Prod.fst).Nodup := by rw [hkeys₁]; exact hnd
               exact evalExpr_obj hv' hn' hvs
@@ -347,8 +360,9 @@ theorem checkExpr_sound {ctx env e τ je} (h : checkExpr ctx e τ = .ok je) (ha 
                       | none => rw [hxl] at hs; cases hs
                       | some w =>
                         refine ⟨w, ?_, τl, hτl, hp l' w τl hxl hτl⟩
-                        simp [JS.evalAtom, hvx, JS.readPath, List.foldl, JS.readField, hxl])
-                refine ⟨.obj vs true, ?_, .obj hr (fun l => ?_) (fun l v τ' hv hτ' => ?_)⟩
+                        have hshape := declared_label_shape hd hr hτl
+                        simp [JS.evalAtom, hshape, hvx, JS.readPath, JS.readField, hxl])
+                refine ⟨1, .obj vs true, ?_, .obj hr (fun l => ?_) (fun l v τ' hv hτ' => ?_)⟩
                 · have hv' : (efs.map Prod.fst).all JS.validLabel = true := by rw [hkeys₁]; exact htvalid
                   have hn' : (efs.map Prod.fst).Nodup := by rw [hkeys₁]; exact htnodup
                   exact evalExpr_obj hv' hn' hvs
@@ -433,7 +447,7 @@ theorem checkDecl_record {ctx r fields ctx' jd} (h : checkDecl ctx (.record r fi
 theorem checkDecl_val {ctx x tn e ctx' jd} (h : checkDecl ctx (.val x tn e) = .ok (ctx', jd)) :
     JS.bindable x = true ∧ lookup ctx.vals x = none ∧ ctx'.recs = ctx.recs ∧ ctx'.types = ctx.types ∧
       ∃ τ je, resolve ctx.types tn = .ok τ ∧ checkExpr ctx e τ = .ok je ∧
-        ctx'.vals = (x, τ) :: ctx.vals ∧ jd = some ⟨x, je⟩ := by
+        ctx'.vals = (x, τ) :: ctx.vals ∧ jd = some ⟨x, je, true⟩ := by
   simp only [checkDecl] at h
   split at h
   · cases h
@@ -458,14 +472,14 @@ theorem checkDecl_val {ctx x tn e ctx' jd} (h : checkDecl ctx (.val x tn e) = .o
 /-- The invariant carries through the program, declaration by declaration. -/
 theorem checkFrom_sound : ∀ (p : Program) {ctx ctx' js env}, checkFrom ctx p = .ok (ctx', js) →
     Agrees ctx env → DeclsOk ctx →
-    ∃ env', JS.runFrom env js = .ok env' ∧ Agrees ctx' env' ∧ DeclsOk ctx' := by
+    ∃ n env', JS.runFrom n env js = .ok env' ∧ Agrees ctx' env' ∧ DeclsOk ctx' := by
   intro p
   induction p with
   | nil =>
     intro ctx ctx' js env h ha hd
     simp only [checkFrom, Except.ok.injEq, Prod.mk.injEq] at h
     obtain ⟨rfl, rfl⟩ := h
-    exact ⟨env, rfl, ha, hd⟩
+    exact ⟨0, env, rfl, ha, hd⟩
   | cons d ds ih =>
     intro ctx ctx' js env h ha hd
     simp only [checkFrom] at h
@@ -542,7 +556,7 @@ theorem checkFrom_sound : ∀ (p : Program) {ctx ctx' js env}, checkFrom ctx p =
         | val x tn e =>
           obtain ⟨hvalid, hfreshv, hrecs, htypes, τ, je, hres, hc, hvals, rfl⟩ := checkDecl_val hdec
           have hτ : TyOk ctx.recs τ := resolve_tyOk hd hres
-          obtain ⟨v, hv, hvt⟩ := checkExpr_sound hc ha hd hτ
+          obtain ⟨n₁, v, hv, hvt⟩ := checkExpr_sound hc ha hd hτ
           have hnot : (lookup env x).isSome = false := by rw [← ha.1 x, hfreshv]; rfl
           have ha₁ : Agrees ctx₁ ((x, v) :: env) := by
             have := agrees_cons (x := x) ha hvt
@@ -559,18 +573,19 @@ theorem checkFrom_sound : ∀ (p : Program) {ctx ctx' js env}, checkFrom ctx p =
               · simp only [e', if_true] at h'; cases h'; exact hτ
               · simp only [e', if_false] at h'; exact hd.vals y t' h'
             · rw [hrecs] at h' ⊢; exact hd.fields r' tfs' h'
-          obtain ⟨env', hrun, ha', hd'⟩ := ih hrest ha₁ hd₁
-          refine ⟨env', ?_, ha', hd'⟩
+          obtain ⟨n₂, env', hrun, ha', hd'⟩ := ih hrest ha₁ hd₁
+          refine ⟨max n₁ n₂, env', ?_, ha', hd'⟩
           have hident : JS.validIdent x = true := by simp only [JS.bindable, Bool.and_eq_true] at hvalid; exact hvalid.1
           have hglobal : JS.emittedGlobals.contains x = false := by
             simp only [JS.bindable, Bool.and_eq_true, Bool.not_eq_true'] at hvalid; exact hvalid.2
-          simp only [JS.runFrom, hident, hglobal, Bool.not_true, Bool.false_eq_true, if_false, hnot, hv]
-          exact hrun
+          simp only [JS.runFrom, hident, hglobal, Bool.not_true, Bool.false_eq_true, if_false, hnot]
+          rw [JS.evalExpr_mono n₁ hv (by simp) _ (Nat.le_max_left _ _)]
+          exact JS.runFrom_mono _ hrun (by simp) _ (Nat.le_max_right _ _)
 
-/-- **Soundness.** If the compiler accepts a program, the module it emits runs without an error, and
-    every name the checker declared holds a value of its declared type. -/
+/-- **Soundness.** If the compiler accepts a program, the module it emits runs without an error, given
+    enough fuel, and every name the checker declared holds a value of its declared type. -/
 theorem compile_sound {p : Program} {out : JS.Program} (h : compile p = .ok out) :
-    ∃ ctx env, check p = .ok (ctx, out) ∧ JS.run out = .ok env ∧
+    ∃ ctx env, check p = .ok (ctx, out) ∧ (∃ n, JS.run n out = .ok env) ∧
       ∀ x τ, lookup ctx.vals x = some τ → ∃ v, lookup env x = some v ∧ ValOf ctx.recs v τ := by
   simp only [compile] at h
   cases hc : check p with
@@ -578,12 +593,12 @@ theorem compile_sound {p : Program} {out : JS.Program} (h : compile p = .ok out)
   | ok res =>
     obtain ⟨ctx, js⟩ := res
     simp only [hc, Except.ok.injEq] at h; subst h
-    obtain ⟨env, hrun, ha, _⟩ := checkFrom_sound p (env := []) hc
+    obtain ⟨n, env, hrun, ha, _⟩ := checkFrom_sound p (env := []) hc
       ⟨fun _ => rfl, fun _ _ h => by simp [Ctx.empty, lookup] at h⟩
       ⟨fun _ h => by simp [Ctx.empty, lookup] at h, fun _ _ h => by simp [Ctx.empty, lookup] at h,
        fun _ _ h => by simp [Ctx.empty, lookup] at h, fun _ _ h => by simp [Ctx.empty, lookup] at h,
        fun _ _ h => by simp [Ctx.empty, lookup] at h⟩
-    exact ⟨ctx, env, rfl, hrun, ha.2⟩
+    exact ⟨ctx, env, rfl, ⟨n, hrun⟩, ha.2⟩
 
 /-- The names the program declares as values. -/
 def valNames : Program → List String

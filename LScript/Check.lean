@@ -180,7 +180,7 @@ def checkDecl (ctx : Ctx) : Decl → Except String (Ctx × Option JS.Decl)
       | .error err => .error err
       | .ok τ =>
         match checkExpr ctx e τ with
-        | .ok je => .ok ({ ctx with vals := (x, τ) :: ctx.vals }, some ⟨x, je⟩)
+        | .ok je => .ok ({ ctx with vals := (x, τ) :: ctx.vals }, some ⟨x, je, true⟩)
         | .error err => .error s!"{x}: {err}"
 
 def checkFrom (ctx : Ctx) : Program → Except String (Ctx × JS.Program)

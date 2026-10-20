@@ -21,6 +21,26 @@ def users : Program :=
 example : JS.render ((compile users).toOption.getD []) =
     "export const ann = Object.freeze({ name: \"Ann\", age: 42 });\nexport const annName = ann.name;\nexport const bob = Object.freeze({ name: \"Bob\", age: ann.age });\n" := rfl
 
+/-- The model of closures, ahead of the language having functions: `k` returns a function that
+    ignores its argument, so `k(1)(2)` is 1. This is the text `test/v8.mjs` runs in Node. -/
+def curried : JS.Program :=
+  [⟨"k", .arrow "x" (.arrow "y" (.atom (.path "x" []))), false⟩,
+   ⟨"r", .call (.path "k" []) (.num 1) [.num 2], true⟩]
+
+example : JS.render curried = "const k = (x) => (y) => x;\nexport const r = k(1)(2);\n" := rfl
+
+def numAt (r : Except JS.Err (List (String × JS.Val))) (x : String) : Option Int :=
+  match r with
+  | .ok env => match lookup env x with
+    | some (.num n) => some n
+    | _ => none
+  | .error _ => none
+
+/-- Each call takes a unit of fuel for its body: at fuel 2 the module finishes, and at fuel 1 the body
+    of `k` has none left. -/
+example : numAt (JS.run 2 curried) "r" = some 1 := by decide
+example : (match JS.run 1 curried with | .error .outOfFuel => true | _ => false) = true := by decide
+
 /-- The real checker rejects every counterexample, so none of them is wrong here. -/
 example : counterexamples.all (fun e => (compile e.2).toOption.isNone && !wrong e.2) = true := by decide
 

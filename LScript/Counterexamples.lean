@@ -60,8 +60,11 @@ theorem valOfB_complete {recs : Recs} {v τ} (h : ValOf recs v τ) : ∀ n, valO
 
 /-- What `compile_sound` concludes for a program the compiler accepts. -/
 def Conclusion (p : Program) (out : JS.Program) : Prop :=
-  ∃ ctx env, check p = .ok (ctx, out) ∧ JS.run out = .ok env ∧
+  ∃ ctx env, check p = .ok (ctx, out) ∧ (∃ n, JS.run n out = .ok env) ∧
     ∀ x τ, lookup ctx.vals x = some τ → ∃ v, lookup env x = some v ∧ ValOf ctx.recs v τ
+
+/-- The fuel `wrong` runs a module with. Running out is no verdict: more fuel might finish it. -/
+def wrongFuel : Nat := 100
 
 /-- The compiler accepts `p`, and its output fails in the model of V8, or a name holds a value that
     isn't of its declared type. -/
@@ -69,7 +72,8 @@ def wrong (p : Program) : Bool :=
   match check p with
   | .error _ => false
   | .ok (ctx, out) =>
-    match JS.run out with
+    match JS.run wrongFuel out with
+    | .error .outOfFuel => false
     | .error _ => true
     | .ok env => ctx.vals.any fun q =>
       match lookup ctx.vals q.1, lookup env q.1 with
@@ -88,11 +92,23 @@ theorem wrong_refutes {p : Program} (hw : wrong p = true) :
     obtain ⟨ctx, out⟩ := res
     simp only [hc] at hw
     have hcomp : compile p = .ok out := by simp [compile, hc]
-    obtain ⟨ctx', env, hc', hrun, hall⟩ := hsound hcomp
+    obtain ⟨ctx', env, hc', ⟨n, hrun⟩, hall⟩ := hsound hcomp
     rw [hc] at hc'
     simp only [Except.ok.injEq, Prod.mk.injEq] at hc'
     obtain ⟨rfl, -⟩ := hc'
-    rw [hrun] at hw
+    -- Both runs agree at the larger fuel, unless the one `wrong` made ran out.
+    have hbig := JS.run_mono hrun (by simp) (max n wrongFuel) (Nat.le_max_left _ _)
+    cases hr : JS.run wrongFuel out with
+    | error e =>
+      rw [hr] at hw
+      by_cases he : e = .outOfFuel
+      · subst he; simp at hw
+      · have := JS.run_mono hr (by simpa using he) (max n wrongFuel) (Nat.le_max_right _ _)
+        rw [hbig] at this; cases this
+    | ok env' =>
+    have := JS.run_mono hr (by simp) (max n wrongFuel) (Nat.le_max_right _ _)
+    rw [hbig] at this; cases this
+    rw [hr] at hw
     simp only [List.any_eq_true] at hw
     obtain ⟨q, _, hbad⟩ := hw
     cases hl : lookup ctx.vals q.1 with

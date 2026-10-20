@@ -52,10 +52,14 @@ const value = (expr) => { try { return JSON.stringify(eval(`(${expr})`)) ?? 'und
 expect('({ a: 1, a: "x" }).a  (V8 keeps the last; the model refuses it)', value('({ a: 1, a: "x" }).a'), '"x"');
 expect('Object.keys({ __proto__: 1 })  (no field; the model refuses it)', value('Object.keys({ __proto__: 1 })'), '[]');
 expect('({ __proto__: {} }).__proto__ is not an own field', value('Object.hasOwn({ __proto__: {} }, "__proto__")'), 'false');
-expect('({ name: "a" }).email  (not an error: notOwn)', value('({ name: "a" }).email'), 'undefined');
-expect('typeof ({}).toString  (inherited: notOwn)', value('typeof ({}).toString'), '"function"');
-expect('(42).name  (not an error: notOwn)', value('(42).name'), 'undefined');
-expect('"Ann".length  (a value, but not a field: notOwn)', value('"Ann".length'), '3');
+expect('({ name: "a" }).email  (not an error: untracked)', value('({ name: "a" }).email'), 'undefined');
+expect('typeof ({}).toString  (inherited: untracked)', value('typeof ({}).toString'), '"function"');
+expect('(42).name  (not an error: untracked)', value('(42).name'), 'undefined');
+expect('"Ann".length  (a value, but not a field: untracked)', value('"Ann".length'), '3');
+expect('((x) => x).length  (a function\'s property: untracked)', value('((x) => x).length'), '1');
+expect('({ a: 1 }).b.c  (a read through undefined; the model refuses it)', value('({ a: 1 }).b.c'), 'TypeError');
+expect('({}).toString.name  (a read through a method; refused all the same)', value('({}).toString.name'), '"toString"');
+expect('o.1, a property that isn\'t an identifier', outcome('export const o = { a: 1 };\nexport const r = o.1;\n'), 'parse SyntaxError');
 expect('Object.keys({ b: 1, a: 2 }) are the literal\'s fields', value('Object.keys({ b: 1, a: 2 })'), '["b","a"]');
 expect('a literal\'s prototype is Object.prototype', value('Object.getPrototypeOf({ a: 1 }) === Object.prototype'), 'true');
 
@@ -70,6 +74,34 @@ expect('an importer redefines a field', tryImport('Object.defineProperty(ann, "a
 expect('an importer changes its prototype', tryImport('Object.setPrototypeOf(ann, null);'), 'run TypeError');
 expect('Object.freeze returns the object it froze', value('(() => { const o = {}; return Object.freeze(o) === o && Object.isFrozen(o); })()'), 'true');
 expect('a module binding Object, then a record (the model refuses it)', outcome('export const Object = 1;\nexport const r = Object.freeze({ a: 1 });\n'), 'run TypeError');
+
+// Functions: arrows, calls, and what V8 checks before running any of the module.
+const moduleValue = async (source, name) => {
+  const f = join(dir, `m${n++}.mjs`);
+  writeFileSync(f, source);
+  try { return JSON.stringify((await import(f))[name]) ?? 'undefined'; } catch (e) { return e.constructor.name; }
+};
+expect('a call runs the body with the argument', await moduleValue('const id = (x) => x;\nexport const r = id(7);\n', 'r'), '7');
+expect('a curried call, f(a)(b)', await moduleValue('const k = (x) => (y) => x;\nexport const r = k(1)(2);\n', 'r'), '1');
+expect('a closure sees the names declared before it', await moduleValue('const a = 5;\nconst f = (x) => a;\nexport const r = f(0);\n', 'r'), '5');
+expect('a parameter shadows a name declared before', await moduleValue('const x = 1;\nconst f = (x) => x;\nexport const r = f(2);\n', 'r'), '2');
+expect('a body making a record: frozen', await moduleValue('const mk = (x) => Object.freeze({ a: x });\nexport const r = Object.isFrozen(mk(1));\n', 'r'), 'true');
+expect('calling a number', outcome('const n = 1;\nexport const r = n(2);\n'), 'run TypeError');
+expect('calling a string', outcome('const s = "f";\nexport const r = s(2);\n'), 'run TypeError');
+expect('calling a field that isn\'t there', outcome('const o = Object.freeze({});\nexport const r = o.f(1);\n'), 'run TypeError');
+expect('calling an inherited method (the model refuses it)', outcome('const o = Object.freeze({});\nexport const r = o.toString(1);\n'), 'ok');
+expect('a body that isn\'t valid syntax, never called', outcome('const f = (x) => class;\nexport const r = 1;\n'), 'parse SyntaxError');
+expect('a body reading a property that isn\'t an identifier, never called', outcome('const f = (x) => x.1;\nexport const r = 1;\n'), 'parse SyntaxError');
+expect('a body with a string broken across lines, never called', outcome('const f = (x) => "a\nb";\nexport const r = 1;\n'), 'parse SyntaxError');
+for (const w of ['eval', 'arguments', 'class', 'let', 'yield', 'await']) {
+  expect(`a parameter named ${w}`, outcome(`const f = (${w}) => 1;\nexport const r = 1;\n`), 'parse SyntaxError');
+}
+expect('a parameter named Object, then a record (the model refuses it)', outcome('const f = (Object) => Object.freeze({ a: 1 });\nexport const r = f(1);\n'), 'run TypeError');
+expect('a body reading a name declared after it (the model refuses it)', outcome('const f = (x) => y;\nconst y = 2;\nexport const r = f(1);\n'), 'ok');
+expect('...and called before that name\'s line', outcome('const f = (x) => y;\nexport const r = f(1);\nconst y = 2;\n'), 'run ReferenceError');
+const fnLib = join(dir, 'fn.mjs');
+writeFileSync(fnLib, 'const f = (x) => x;\nexport const r = f(1);\n');
+expect('an importer naming a const that isn\'t exported', outcome(`import { f } from ${JSON.stringify(fnLib)};\n`), 'run SyntaxError');
 
 console.log(failed ? `${failed} disagreement(s) with the model` : 'the model agrees with Node');
 process.exit(failed ? 1 : 0);

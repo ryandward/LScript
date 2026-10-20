@@ -69,6 +69,16 @@ identifier JavaScript allows as a property name, reserved words such as `class` 
 ones, each of its declared type, so no field read the checker accepts gives `undefined`. Two records with
 the same fields are different types. Functions come in slice 3, with values from outside.
 
+## Slice 3, so far
+
+Single-parameter functions, curried, used inside a module and never exported, since an importer could
+call one with anything. So far only the model of V8 has them: an arrow function is a closure over the
+names declared before it, a call runs its body, and evaluation takes a unit of fuel per call, which
+`compile_sound` now says exists. LScript/JS.lean proves that any result other than running out stays
+the same with more fuel, and `test/v8.mjs` measures each claim, including the SyntaxError V8 raises
+for a body that isn't valid syntax even when nothing calls it. The language doesn't have functions
+yet.
+
 ## Checking a run
 
 `certify/check.sh F.ls` has Lean's kernel check one compiled program, `F.ls` and the `F.mjs` beside it.
