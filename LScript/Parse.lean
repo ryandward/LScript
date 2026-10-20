@@ -9,13 +9,15 @@ every test program.
     decl  := "type" Name "=" Type | "type" Name "=" "{" (label ":" Type),* "}" | name ":" Type "=" expr
     expr  := atom | name ("." label)+ | "{" (label ":" atom),* "}" | "{" name "with" (label ":" atom),* "}"
     atom  := integer | string | name
+
+`type` and `with` are keywords only where the grammar puts them, as TypeScript treats `type`: `type`
+followed by a name at the start of a declaration, and `with` after `{ name`. Anywhere else they are
+ordinary names, so `type: Int = 1`, `{ type: "click" }` and `type type = Int` all parse.
 -/
 
 namespace LScript
 
 inductive Tok where
-  | kwType
-  | kwWith
   | ident (s : String)
   | int (n : Int)
   | str (s : String)
@@ -52,8 +54,7 @@ partial def lex : List Char → Array Tok → Except String (Array Tok)
     else if JS.isIdentStart c then
       let word := (c :: cs).takeWhile JS.isIdentRest
       let w := String.mk word
-      let tok := if w == "type" then .kwType else if w == "with" then .kwWith else .ident w
-      lex ((c :: cs).drop word.length) (acc.push tok)
+      lex ((c :: cs).drop word.length) (acc.push (.ident w))
     else .error s!"unexpected character {repr c}"
 
 def tyNameOf (s : String) : TyName :=
@@ -93,7 +94,7 @@ partial def labels : List Tok → List String × List Tok
   | rest => ([], rest)
 
 def expr : P Expr
-  | .lbrace :: .ident x :: .kwWith :: rest => do
+  | .lbrace :: .ident x :: .ident "with" :: rest => do
     let (fs, rest) ← fieldList atom rest
     pure (.update x fs, rest)
   | .lbrace :: rest => do
@@ -108,10 +109,10 @@ def expr : P Expr
 
 partial def decls : List Tok → Except String (List Decl)
   | [] => .ok []
-  | .kwType :: .ident r :: .eq :: .lbrace :: rest => do
+  | .ident "type" :: .ident r :: .eq :: .lbrace :: rest => do
     let (fs, rest) ← fieldList tyItem rest
     pure (.record r fs :: (← decls rest))
-  | .kwType :: .ident a :: .eq :: .ident t :: rest => do
+  | .ident "type" :: .ident a :: .eq :: .ident t :: rest => do
     pure (.alias a (tyNameOf t) :: (← decls rest))
   | .ident x :: .colon :: .ident t :: .eq :: rest => do
     let (e, rest) ← expr rest

@@ -25,6 +25,9 @@ const expect = (label, got, want) => {
 const lean = readFileSync(new URL('../LScript/JS.lean', import.meta.url), 'utf8');
 const reserved = JSON.parse(/def reservedWords : List String :=\s*(\[[^\]]*\])/.exec(lean)[1]);
 for (const w of reserved) expect(`export const ${w} = 1;`, outcome(`export const ${w} = 1;\n`), 'parse SyntaxError');
+for (const w of reserved) {
+  expect(`a reserved word as a label: { ${w}: 1 } and o.${w}`, outcome(`export const o = { ${w}: 1 };\nexport const r = o.${w};\n`), 'ok');
+}
 for (const w of ['undefined', 'NaN', 'Infinity', 'async', 'of', 'get', 'set', 'from', 'as', 'console', 'Int', 'type']) {
   expect(`export const ${w} = 1; (not reserved)`, outcome(`export const ${w} = 1;\n`), 'ok');
 }

@@ -1,0 +1,7 @@
+export const type = 1;
+export const e = { type: "click", class: "button", default: 0, with: 2 };
+export const kind = e.type;
+export const cls = e.class;
+export const n = e.default;
+export const e2 = { type: "dblclick", class: e.class, default: e.default, with: e.with };
+export const again = type;

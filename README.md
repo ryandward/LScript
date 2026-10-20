@@ -53,7 +53,9 @@ export const bob = { name: "Bob", age: ann.age };
 An update lists every declared field, reading the ones it doesn't change from the old record, so
 the new object holds exactly the record's fields and never whatever else the old object might hold.
 A record's fields, and an update's new values, are literals or names: every intermediate value has a
-name.
+name. `type` and `with` are keywords only where the grammar puts them, as TypeScript
+treats `type`, so `type: Int = 1` and `{ type: "click" }` parse; and a field label may be any
+identifier JavaScript allows as a property name, reserved words such as `class` included.
 
 `compile_sound` now says a record's value is an object whose own fields are exactly the declared ones,
 each of its declared type, so no field read the checker accepts gives `undefined`. Two records with

@@ -8,7 +8,8 @@ a chain of property reads, or an object literal of those. This file models exact
 what each line can evaluate to, and every way it can go wrong. `test/v8.mjs` checks the model against
 Node.
 
-* A name that isn't a JavaScript identifier, or is a reserved word, is a SyntaxError.
+* A name that isn't a JavaScript identifier, or is a reserved word, is a SyntaxError. A field label
+  may be a reserved word: JavaScript allows those as property names.
 * A name declared twice is a SyntaxError.
 * Reading a name before its line, or a name never declared, is a ReferenceError.
 * A numeric literal denotes a double. Within ±(2^53 − 1) the double is exactly the integer written;
@@ -76,14 +77,18 @@ def reservedWords : List String :=
 def isIdentStart (c : Char) : Bool := c.isAlpha || c == '_'
 def isIdentRest (c : Char) : Bool := c.isAlphanum || c == '_'
 
-/-- `[A-Za-z_][A-Za-z0-9_]*`, not reserved: a subset of JavaScript's identifiers. -/
-def validIdent (s : String) : Bool :=
+/-- `[A-Za-z_][A-Za-z0-9_]*`. -/
+def identShape (s : String) : Bool :=
   match s.toList with
   | [] => false
-  | c :: cs => isIdentStart c && cs.all isIdentRest && !reservedWords.contains s
+  | c :: cs => isIdentStart c && cs.all isIdentRest
 
-/-- A field label: an identifier other than `__proto__`, which an object literal treats specially. -/
-def validLabel (s : String) : Bool := validIdent s && s != "__proto__"
+/-- A name a `const` can bind: the shape, and not reserved. -/
+def validIdent (s : String) : Bool := identShape s && !reservedWords.contains s
+
+/-- A field label. JavaScript allows reserved words as property names (`{ class: 1 }`, `o.class`), so a
+    label needs only the shape; `__proto__` is excluded, since an object literal treats it specially. -/
+def validLabel (s : String) : Bool := identShape s && s != "__proto__"
 
 /-- Printable ASCII other than `"` and `\`: a string that prints between quotes as itself. -/
 def validStr (s : String) : Bool :=
