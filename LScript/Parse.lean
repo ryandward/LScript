@@ -9,8 +9,10 @@ unit per character or token. Every step consumes at least one, so the fuel `pars
 always suffice; that is an argument, not yet a theorem. Running out returns an error, so it could only
 reject a program, never accept one.
 
-    decl  := "type" Name "=" Type | "type" Name "=" "{" (label ":" Type),* "}" | name ":" Type "=" expr
+    decl  := "type" Name "=" type | "type" Name "=" "{" (label ":" type),* "}" | name ":" type "=" expr
+    type  := Name | "(" type ")" | type "->" type                     -- the arrow groups to the right
     expr  := atom | name ("." label)+ | "{" (label ":" atom),* "}" | "{" name "with" (label ":" atom),* "}"
+           | "(" name ")" "=>" expr | name ("(" atom ")")+
     atom  := integer | string | name
 
 `type` and `with` are keywords only where the grammar puts them, as TypeScript treats `type`: `type`
@@ -30,6 +32,10 @@ inductive Tok where
   | rbrace
   | comma
   | dot
+  | lparen
+  | rparen
+  | fatArrow                                  -- =>
+  | thinArrow                                 -- ->
   deriving Repr, DecidableEq
 
 /-- A token as it is written, for messages. -/
@@ -43,6 +49,10 @@ def Tok.show : Tok → String
   | .rbrace => "}"
   | .comma => ","
   | .dot => "."
+  | .lparen => "("
+  | .rparen => ")"
+  | .fatArrow => "=>"
+  | .thinArrow => "->"
 
 def isSpace (c : Char) : Bool := c == ' ' || c == '\t' || c == '\n' || c == '\r'
 
@@ -57,7 +67,11 @@ def lex : Nat → List Char → List Tok → Except String (List Tok)
     if isSpace c then lex n cs acc
     else if c == '/' && cs.head? == some '/' then lex n (cs.dropWhile (· != '\n')) acc
     else if c == ':' then lex n cs (.colon :: acc)
+    else if c == '=' && cs.head? == some '>' then lex n cs.tail (.fatArrow :: acc)
+    else if c == '-' && cs.head? == some '>' then lex n cs.tail (.thinArrow :: acc)
     else if c == '=' then lex n cs (.eq :: acc)
+    else if c == '(' then lex n cs (.lparen :: acc)
+    else if c == ')' then lex n cs (.rparen :: acc)
     else if c == '{' then lex n cs (.lbrace :: acc)
     else if c == '}' then lex n cs (.rbrace :: acc)
     else if c == ',' then lex n cs (.comma :: acc)
@@ -108,26 +122,73 @@ def fieldList {α : Type} (item : P α) : Nat → P (List (String × α))
   | _ + 1, t :: _ => .error s!"expected label: ..., at {t.show}"
   | _ + 1, [] => .error "a { is not closed"
 
-def tyItem : P TyName
-  | .ident t :: rest => .ok (tyNameOf t, rest)
-  | t :: _ => .error s!"expected a type, at {t.show}"
-  | [] => .error "expected a type, at the end"
+/-- `A`, `(A)`, or `A -> B`, where the arrow groups to the right: `A -> B -> C` is `A -> (B -> C)`. -/
+def ty : Nat → P TyName
+  | 0, _ => .error "the parser ran out of fuel"
+  | n + 1, toks => do
+    let (a, rest) ← match toks with
+      | .ident t :: rest => pure (tyNameOf t, rest)
+      | .lparen :: rest => do
+        let (t, rest) ← ty n rest
+        match rest with
+        | .rparen :: rest => pure (t, rest)
+        | t' :: _ => .error s!"expected ), at {t'.show}"
+        | [] => .error "expected ), at the end"
+      | t :: _ => .error s!"expected a type, at {t.show}"
+      | [] => .error "expected a type, at the end"
+    match rest with
+    | .thinArrow :: rest => do
+      let (b, rest) ← ty n rest
+      pure (.fn a b, rest)
+    | _ => pure (a, rest)
+
+/-- `(a)`: a call's one argument. -/
+def arg : P Atom
+  | .lparen :: rest => do
+    let (a, rest) ← atom rest
+    match rest with
+    | .rparen :: rest => pure (a, rest)
+    | .comma :: _ => .error "a function takes one argument, so pass more as f(a)(b)"
+    | .lparen :: _ => .error "an argument is a literal or a name, so give the inner call its own declaration first"
+    | .dot :: _ => .error "an argument is a literal or a name, so give the read its own declaration first"
+    | t :: _ => .error s!"expected ), at {t.show}"
+    | [] => .error "expected ), at the end"
+  | t :: _ => .error s!"expected (, at {t.show}"
+  | [] => .error "expected (, at the end"
+
+/-- The arguments after the first, `(b)(c)…`, if any. -/
+def moreArgs : Nat → List Tok → Except String (List Atom × List Tok)
+  | 0, _ => .error "the parser ran out of fuel"
+  | n + 1, .lparen :: rest => do
+    let (a, rest) ← arg (.lparen :: rest)
+    let (more, rest) ← moreArgs n rest
+    pure (a :: more, rest)
+  | _ + 1, rest => .ok ([], rest)
 
 def labels : List Tok → List String × List Tok
   | .dot :: .ident l :: rest => let (ls, rest) := labels rest; (l :: ls, rest)
   | rest => ([], rest)
 
-def expr (fuel : Nat) : P Expr
-  | .lbrace :: .ident x :: .ident "with" :: rest => do
-    let (fs, rest) ← fieldList atom fuel rest
+def expr : Nat → P Expr
+  | 0, _ => .error "the parser ran out of fuel"
+  | n + 1, .lparen :: .ident x :: .rparen :: .fatArrow :: rest => do
+    let (body, rest) ← expr n rest
+    pure (.lam x body, rest)
+  | _ + 1, .ident _ :: .fatArrow :: _ => .error "a parameter goes in parentheses: (x) => ..."
+  | n + 1, .lbrace :: .ident x :: .ident "with" :: rest => do
+    let (fs, rest) ← fieldList atom n rest
     pure (.update x fs, rest)
-  | .lbrace :: rest => do
-    let (fs, rest) ← fieldList atom fuel rest
+  | n + 1, .lbrace :: rest => do
+    let (fs, rest) ← fieldList atom n rest
     pure (.record fs, rest)
-  | .ident x :: rest =>
+  | n + 1, .ident f :: .lparen :: rest => do
+    let (a, rest) ← arg (.lparen :: rest)
+    let (more, rest) ← moreArgs n rest
+    pure (.app f a more, rest)
+  | _ + 1, .ident x :: rest =>
     let (ls, rest) := labels rest
     .ok (if ls.isEmpty then .atom (.var x) else .path x ls, rest)
-  | toks => do
+  | _ + 1, toks => do
     let (a, rest) ← atom toks
     pure (.atom a, rest)
 
@@ -135,13 +196,19 @@ def decls : Nat → List Tok → Except String (List Decl)
   | _, [] => .ok []
   | 0, _ :: _ => .error "the parser ran out of fuel"
   | n + 1, .ident "type" :: .ident r :: .eq :: .lbrace :: rest => do
-    let (fs, rest) ← fieldList tyItem n rest
+    let (fs, rest) ← fieldList (ty n) n rest
     pure (.record r fs :: (← decls n rest))
-  | n + 1, .ident "type" :: .ident a :: .eq :: .ident t :: rest => do
-    pure (.alias a (tyNameOf t) :: (← decls n rest))
-  | n + 1, .ident x :: .colon :: .ident t :: .eq :: rest => do
-    let (e, rest) ← expr n rest
-    pure (.val x (tyNameOf t) e :: (← decls n rest))
+  | n + 1, .ident "type" :: .ident a :: .eq :: rest => do
+    let (t, rest) ← ty n rest
+    pure (.alias a t :: (← decls n rest))
+  | n + 1, .ident x :: .colon :: rest => do
+    let (t, rest) ← ty n rest
+    match rest with
+    | .eq :: rest => do
+      let (e, rest) ← expr n rest
+      pure (.val x t e :: (← decls n rest))
+    | t' :: _ => .error s!"expected =, at {t'.show}"
+    | [] => .error "expected =, at the end"
   | _ + 1, t :: _ => .error s!"expected `type Name = ...` or `name: Type = value`, at {t.show}"
 
 def parse (src : String) : Except String Program :=

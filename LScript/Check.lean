@@ -11,7 +11,13 @@ A record type is closed and nominal. A record literal gives every declared field
 each with a value of the field's type. A field read names a declared field. An update builds a new
 record of the same type: the fields it names get new values, and every other field is read from the
 old record, so the emitted object lists exactly the declared fields, never what the old object might
-also hold.
+also hold. A record's fields are data, never functions.
+
+A function is checked against its declared type, which must be a function type: its body is checked
+against the result type with its parameter in scope at the parameter type. A call's function must
+have exactly the type its arguments and the declared result call for, `A -> B -> T` for `f(a)(b)` of
+type `T`, so a call may give fewer arguments than the function takes and get a function back. A name
+of a function type is emitted without `export`: only data leaves the module.
 
 Every rejection ends with the code of the check that made it, and every check is tagged with its
 kind: `load-bearing` (without it, the compiler accepts the check's program in `Counterexamples.lean`
@@ -34,6 +40,7 @@ def tyName : Ty → String
   | .int => "Int"
   | .str => "String"
   | .record r => r
+  | .fn a b => (match a with | .fn _ _ => "(" ++ tyName a ++ ")" | _ => tyName a) ++ " -> " ++ tyName b
 
 /-- A record's declared fields. Every record type in scope was declared, so they are always there. -/
 def fieldsOf (ctx : Ctx) (r : String) : List (String × Ty) := (lookup ctx.recs r).getD []
@@ -47,6 +54,25 @@ def fieldsOfTy (ctx : Ctx) : Ty → List (String × Ty)
   | .record r => fieldsOf ctx r
   | _ => []
 
+def isFn : Ty → Bool
+  | .fn _ _ => true
+  | _ => false
+
+/-- A function type's parameter and result. Anything else is its own, which nothing uses: a function
+    checked against it is rejected first. -/
+def paramTy : Ty → Ty
+  | .fn a _ => a
+  | t => t
+
+def resultTy : Ty → Ty
+  | .fn _ b => b
+  | t => t
+
+/-- The type of a function that takes arguments of these types and gives `τ`. -/
+def arrowTy : List Ty → Ty → Ty
+  | [], τ => τ
+  | t :: ts, τ => .fn t (arrowTy ts τ)
+
 def resolve (types : List (String × Ty)) : TyName → Except String Ty
   | .int => .ok .int
   | .str => .ok .str
@@ -54,6 +80,11 @@ def resolve (types : List (String × Ty)) : TyName → Except String Ty
     match lookup types a with
     | some t => .ok t
     | none => .error s!"type {a} is not declared before this line [type-declared]"  -- check: type-declared (partial)
+  | .fn a b =>
+    match resolve types a, resolve types b with
+    | .ok ta, .ok tb => .ok (.fn ta tb)
+    | .error e, _ => .error e
+    | .ok _, .error e => .error e
 
 def resolveFields (types : List (String × Ty)) : List (String × TyName) → Except String (List (String × Ty))
   | [] => .ok []
@@ -95,6 +126,14 @@ def checkFields (ctx : Ctx) (t : Ty) : List (String × Atom) → Except String U
       | .ok τ' =>
         if τ' ≠ τ then .error s!"field {l} of {tyName t} is {tyName τ}, and its value is {tyName τ'} [field-type]"  -- check: field-type (load-bearing)
         else checkFields ctx t rest
+
+def inferArgs (ctx : Ctx) : List Atom → Except String (List Ty)
+  | [] => .ok []
+  | a :: rest =>
+    match inferAtom ctx a, inferArgs ctx rest with
+    | .ok t, .ok ts => .ok (t :: ts)
+    | .error e, _ => .error e
+    | .ok _, .error e => .error e
 
 def emitAtom : Atom → JS.Atom
   | .int n => .num n
@@ -152,6 +191,22 @@ def checkExpr (ctx : Ctx) (e : Expr) (τ : Ty) : Except String JS.Expr :=
             (l, match lookup fs l with
                 | some a => emitAtom a
                 | none => .path x [l])))
+  | .lam x body =>
+    if !isFn τ then .error s!"a function is not {tyName τ} [lambda-type]"  -- check: lambda-type (load-bearing)
+    else if !JS.bindable x then .error s!"parameter {x} is reserved, or a global the emitted code calls [param-ident]"  -- check: param-ident (load-bearing)
+    else
+      match checkExpr { ctx with vals := (x, paramTy τ) :: ctx.vals } body (resultTy τ) with
+      | .ok jb => .ok (.arrow x jb)
+      | .error err => .error err
+  | .app f a more =>
+    match lookup ctx.vals f with
+    | none => .error s!"{f} is not declared before this line [call-name-declared]"  -- check: call-name-declared (partial)
+    | some t =>
+      match inferArgs ctx (a :: more) with
+      | .error err => .error err
+      | .ok ts =>
+        if t ≠ arrowTy ts τ then .error s!"{f} is {tyName t}, and this call needs {tyName (arrowTy ts τ)} [call-type]"  -- check: call-type (load-bearing)
+        else .ok (.call (.path f []) (emitAtom a) (more.map emitAtom))
 
 def isBase (a : String) : Bool := a == "Int" || a == "String"
 
@@ -170,7 +225,9 @@ def checkDecl (ctx : Ctx) : Decl → Except String (Ctx × Option JS.Decl)
     else if !labelsOk (fields.map Prod.fst) then .error s!"a field of {r} is declared twice, isn't an identifier, or is __proto__ [record-labels]"  -- check: record-labels (load-bearing)
     else
       match resolveFields ctx.types fields with
-      | .ok tfs => .ok ({ ctx with types := (r, .record r) :: ctx.types, recs := (r, tfs) :: ctx.recs }, none)
+      | .ok tfs =>
+        if !tfs.all (fun p => isData p.2) then .error s!"a field of {r} is a function, and a record holds only data [record-data]"  -- check: record-data (load-bearing)
+        else .ok ({ ctx with types := (r, .record r) :: ctx.types, recs := (r, tfs) :: ctx.recs }, none)
       | .error e => .error e
   | .val x tn e =>
     if !JS.bindable x then .error s!"{x} is reserved, or a global the emitted code calls [val-ident]"  -- check: val-ident (load-bearing)
@@ -180,7 +237,7 @@ def checkDecl (ctx : Ctx) : Decl → Except String (Ctx × Option JS.Decl)
       | .error err => .error err
       | .ok τ =>
         match checkExpr ctx e τ with
-        | .ok je => .ok ({ ctx with vals := (x, τ) :: ctx.vals }, some ⟨x, je, true⟩)
+        | .ok je => .ok ({ ctx with vals := (x, τ) :: ctx.vals }, some ⟨x, je, isData τ⟩)
         | .error err => .error s!"{x}: {err}"
 
 def checkFrom (ctx : Ctx) : Program → Except String (Ctx × JS.Program)

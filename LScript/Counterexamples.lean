@@ -17,9 +17,9 @@ no longer holds.
 
 namespace LScript
 
-/-- `ValOf`, decided to a depth of `n` nested records. At depth 0 it gives up and says yes, so a `false`
-    is always a real failure: `valOfB_complete`. -/
-def valOfB : Nat → Recs → JS.Val → Ty → Bool
+/-- `DataOf`, decided to a depth of `n` nested records. At depth 0 it gives up and says yes, so a
+    `false` is always a real failure: `dataOfB_complete`. A function type has no data. -/
+def dataOfB : Nat → Recs → JS.Val → Ty → Bool
   | 0, _, _, _ => true
   | _ + 1, _, .num n, .int => JS.isSafe n
   | _ + 1, _, .str _, .str => true
@@ -30,21 +30,29 @@ def valOfB : Nat → Recs → JS.Val → Ty → Bool
       frozen && fs.all (fun p => (lookup tfs p.1).isSome) &&
       tfs.all (fun p =>
         match lookup fs p.1, lookup tfs p.1 with
-        | some v, some τ => valOfB n recs v τ
+        | some v, some τ => dataOfB n recs v τ
         | _, _ => false)
   | _ + 1, _, _, _ => false
 
-theorem valOfB_complete {recs : Recs} {v τ} (h : ValOf recs v τ) : ∀ n, valOfB n recs v τ = true := by
+/-- `ValOf`, as far as it can be decided: data by `dataOfB`, and a function only as far as being a
+    closure, since what it does with every argument can't be decided by running it. -/
+def valOfB (n : Nat) (recs : Recs) (v : JS.Val) : Ty → Bool
+  | .fn _ _ => match v with
+    | .clos _ _ _ => true
+    | _ => false
+  | t => dataOfB n recs v t
+
+theorem dataOfB_complete {recs : Recs} {v τ} (h : DataOf recs v τ) : ∀ n, dataOfB n recs v τ = true := by
   induction h with
-  | int hs => intro n; cases n <;> simp [valOfB, hs]
-  | str => intro n; cases n <;> simp [valOfB]
+  | int hs => intro n; cases n <;> simp [dataOfB, hs]
+  | str => intro n; cases n <;> simp [dataOfB]
   | obj hl hk hp ih =>
     rename_i fs r tfs
     intro n
     cases n with
     | zero => rfl
     | succ n =>
-      simp only [valOfB, hl, Bool.and_eq_true, List.all_eq_true]
+      simp only [dataOfB, hl, Bool.and_eq_true, List.all_eq_true]
       refine ⟨⟨trivial, fun p hm => ?_⟩, fun p hm => ?_⟩
       · obtain ⟨l, w⟩ := p
         rw [← hk]; exact lookup_isSome_of_mem hm
@@ -58,10 +66,21 @@ theorem valOfB_complete {recs : Recs} {v τ} (h : ValOf recs v τ) : ∀ n, valO
           | none => rw [htl] at ht; cases ht
           | some τ => exact ih l w τ hfl htl n
 
+theorem valOfB_complete {recs : Recs} {v τ} (h : ValOf recs v τ) (n : Nat) : valOfB n recs v τ = true := by
+  cases τ with
+  | int => exact dataOfB_complete h n
+  | str => exact dataOfB_complete h n
+  | record r => exact dataOfB_complete h n
+  | fn a b =>
+    simp only [ValOf] at h
+    obtain ⟨cenv, x, body, rfl, _⟩ := h
+    rfl
+
 /-- What `compile_sound` concludes for a program the compiler accepts. -/
 def Conclusion (p : Program) (out : JS.Program) : Prop :=
   ∃ ctx env, check p = .ok (ctx, out) ∧ (∃ n, JS.run n out = .ok env) ∧
-    ∀ x τ, lookup ctx.vals x = some τ → ∃ v, lookup env x = some v ∧ ValOf ctx.recs v τ
+    (∀ x τ, lookup ctx.vals x = some τ → ∃ v, lookup env x = some v ∧ ValOf ctx.recs v τ) ∧
+    ∀ d ∈ out, d.exported = true → ∃ v, lookup env d.name = some v ∧ JS.Data v
 
 /-- The fuel `wrong` runs a module with. Running out is no verdict: more fuel might finish it. -/
 def wrongFuel : Nat := 100
@@ -92,7 +111,7 @@ theorem wrong_refutes {p : Program} (hw : wrong p = true) :
     obtain ⟨ctx, out⟩ := res
     simp only [hc] at hw
     have hcomp : compile p = .ok out := by simp [compile, hc]
-    obtain ⟨ctx', env, hc', ⟨n, hrun⟩, hall⟩ := hsound hcomp
+    obtain ⟨ctx', env, hc', ⟨n, hrun⟩, hall, -⟩ := hsound hcomp
     rw [hc] at hc'
     simp only [Except.ok.injEq, Prod.mk.injEq] at hc'
     obtain ⟨rfl, -⟩ := hc'
@@ -142,7 +161,12 @@ def counterexamples : List (String × Program) :=
       .record "R" [("b", .str)], .val "y" .str (.path "x" ["b"])]),
    ("record-labels", [.record "P" [("__proto__", .int)], .val "p" (.named "P") (.record [("__proto__", .int 1)])]),
    ("val-ident", [.val "class" .int (.atom (.int 1))]),
-   ("val-fresh", [.val "a" .int (.atom (.int 1)), .val "a" .int (.atom (.int 2))])]
+   ("val-fresh", [.val "a" .int (.atom (.int 1)), .val "a" .int (.atom (.int 2))]),
+   ("record-data", [.alias "F" (.fn .int .int), .record "R" [("f", .named "F")],
+      .val "id" (.named "F") (.lam "x" (.atom (.var "x"))), .val "r" (.named "R") (.record [("f", .var "id")])]),
+   ("lambda-type", [.val "x" .int (.lam "y" (.atom (.int 1)))]),
+   ("param-ident", [.val "f" (.fn .int .int) (.lam "class" (.atom (.int 1)))]),
+   ("call-type", [.val "n" .int (.atom (.int 1)), .val "m" .int (.app "n" (.int 1) [])])]
 
 def counterexample (name : String) : Program := (lookup counterexamples name).getD []
 

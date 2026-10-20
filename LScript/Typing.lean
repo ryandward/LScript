@@ -12,15 +12,26 @@ namespace LScript
 
 abbrev Recs := List (String × List (String × Ty))
 
-/-- A JavaScript value has an LScript type. A record's object is frozen and has exactly the declared
-    fields. -/
-inductive ValOf (recs : Recs) : JS.Val → Ty → Prop where
-  | int {n} : JS.isSafe n = true → ValOf recs (.num n) .int
-  | str {s} : ValOf recs (.str s) .str
+/-- A JavaScript value is data of an LScript type: a safe integer, a string, or a frozen object with
+    exactly the record's declared fields, each holding data of its declared type. A function type has
+    no data, so a record can't hold a function. -/
+inductive DataOf (recs : Recs) : JS.Val → Ty → Prop where
+  | int {n} : JS.isSafe n = true → DataOf recs (.num n) .int
+  | str {s} : DataOf recs (.str s) .str
   | obj {fs r tfs} : lookup recs r = some tfs →
       (∀ l, (lookup fs l).isSome = (lookup tfs l).isSome) →
-      (∀ l v τ, lookup fs l = some v → lookup tfs l = some τ → ValOf recs v τ) →
-      ValOf recs (.obj fs true) (.record r)
+      (∀ l v τ, lookup fs l = some v → lookup tfs l = some τ → DataOf recs v τ) →
+      DataOf recs (.obj fs true) (.record r)
+
+/-- A JavaScript value has an LScript type. Data is `DataOf`. A function is a closure that, given any
+    value of its parameter type, finishes at some fuel with a value of its result type: it neither
+    throws nor runs forever. -/
+def ValOf (recs : Recs) : JS.Val → Ty → Prop
+  | v, .int => DataOf recs v .int
+  | v, .str => DataOf recs v .str
+  | v, .record r => DataOf recs v (.record r)
+  | v, .fn a b => ∃ cenv x body, v = .clos cenv x body ∧
+      ∀ w, ValOf recs w a → ∃ n r, JS.evalExpr n ((x, w) :: cenv) body = .ok r ∧ ValOf recs r b
 
 /-! ## Association lists -/
 
@@ -71,11 +82,25 @@ theorem lookup_isSome_keys {α β : Type} : ∀ {xs : List (String × α)} {ys :
     · simp [e]
     · simp only [e, if_false]; exact lookup_isSome_keys hrest
 
-theorem ValOf.mono {recs recs' : Recs} (hr : ∀ r tfs, lookup recs r = some tfs → lookup recs' r = some tfs)
-    {v τ} (h : ValOf recs v τ) : ValOf recs' v τ := by
+theorem DataOf.mono {recs recs' : Recs} (hr : ∀ r tfs, lookup recs r = some tfs → lookup recs' r = some tfs)
+    {v τ} (h : DataOf recs v τ) : DataOf recs' v τ := by
   induction h with
   | int hs => exact .int hs
   | str => exact .str
   | obj hl hk _ ih => exact .obj (hr _ _ hl) hk (fun l v τ h1 h2 => ih l v τ h1 h2)
+
+theorem DataOf.valOf {recs v t} (h : DataOf recs v t) : ValOf recs v t := by
+  cases t with
+  | int => exact h
+  | str => exact h
+  | record r => exact h
+  | fn a b => cases h
+
+theorem ValOf.dataOf {recs v t} (hd : isData t = true) (h : ValOf recs v t) : DataOf recs v t := by
+  cases t with
+  | int => exact h
+  | str => exact h
+  | record r => exact h
+  | fn a b => simp [isData] at hd
 
 end LScript

@@ -14,15 +14,25 @@ are no classes and no methods. A record is data, and an update is a new record.
 
 Expressions are flat on purpose: a record's fields, and an update's new values, are literals or
 names. Every intermediate value has a name, which keeps each proof a plain induction.
+
+Slice 3 adds functions of one parameter, curried. A function type is `A -> B`, a function is
+`(x) => body`, and a call is `f(a)` or `f(a)(b)`, with literals or names as arguments. A function's
+body is any expression, so it can be another function. Functions stay inside the module: only data is
+exported, and a record holds only data.
+
+    inc: Int -> Int = (x) => x
+    rename: String -> User -> User = (n) => (u) => { u with name: n }
+    bob: User = rename("Bob")(ann)
 -/
 
 namespace LScript
 
-/-- A type as written: `Int`, `String`, or the name of a type declared earlier. -/
+/-- A type as written: `Int`, `String`, the name of a type declared earlier, or a function type. -/
 inductive TyName where
   | int
   | str
   | named (name : String)
+  | fn (param result : TyName)                               -- A -> B
   deriving Repr, DecidableEq
 
 /-- What a type means once aliases are followed. A record is nominal: two records are the same type
@@ -31,7 +41,13 @@ inductive Ty where
   | int
   | str
   | record (name : String)
+  | fn (param result : Ty)
   deriving Repr, DecidableEq
+
+/-- A type whose values are data: anything but a function. -/
+def isData : Ty → Bool
+  | .fn _ _ => false
+  | _ => true
 
 /-- A literal or a name. -/
 inductive Atom where
@@ -45,6 +61,8 @@ inductive Expr where
   | path (x : String) (labels : List String)                 -- x.l₁.l₂…
   | record (fields : List (String × Atom))                   -- { l: a, … }
   | update (x : String) (fields : List (String × Atom))      -- { x with l: a, … }
+  | lam (param : String) (body : Expr)                       -- (x) => body
+  | app (f : String) (arg : Atom) (more : List Atom)         -- f(a)(b)…: at least one argument
   deriving Repr, DecidableEq
 
 inductive Decl where

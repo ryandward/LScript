@@ -69,15 +69,40 @@ identifier JavaScript allows as a property name, reserved words such as `class` 
 ones, each of its declared type, so no field read the checker accepts gives `undefined`. Two records with
 the same fields are different types. Functions come in slice 3, with values from outside.
 
-## Slice 3, so far
+## Slice 3: functions
 
-Single-parameter functions, curried, used inside a module and never exported, since an importer could
-call one with anything. So far only the model of V8 has them: an arrow function is a closure over the
-names declared before it, a call runs its body, and evaluation takes a unit of fuel per call, which
-`compile_sound` now says exists. LScript/JS.lean proves that any result other than running out stays
-the same with more fuel, and `test/v8.mjs` measures each claim, including the SyntaxError V8 raises
-for a body that isn't valid syntax even when nothing calls it. The language doesn't have functions
-yet.
+Functions of one parameter, curried, used inside the module. A function type is `A -> B`, grouping to
+the right; a function is `(x) => body`; and a call is `f(a)` or `f(a)(b)`, whose arguments, like a
+record's fields, are literals or names.
+
+```
+type User = { name: String, age: Int }
+rename: String -> User -> User = (n) => (u) => { u with name: n }
+mk: String -> Int -> User = (n) => (a) => { name: n, age: a }
+ann: User = mk("Ann")(42)
+bob: User = rename("Bob")(ann)
+```
+
+```js
+const rename = (n) => (u) => Object.freeze({ name: n, age: u.age });
+const mk = (n) => (a) => Object.freeze({ name: n, age: a });
+export const ann = mk("Ann")(42);
+export const bob = rename("Bob")(ann);
+```
+
+A name of a function type is emitted without `export`, and a record's fields can't be functions, so
+only data leaves the module. An exported function could be called with anything, while the proof of
+its body assumes an argument of its parameter type. A call may give fewer arguments than the function
+takes and get a function back, as `konst(3)` does in `test/accept/functions.ls`. A function sees only
+the names declared before it, so it can't call itself, and every call finishes.
+
+`compile_sound` now says the module finishes at some fuel, one unit per call; that a function's value
+is a closure that, given any value of its parameter type, finishes with a value of its result type;
+and that every name the module exports holds data, never a function. The function case is a logical
+relation, the standard way to prove that calls finish: a call needs no argument about termination, and
+the proof for a function is the proof for its body. The model of V8 grew closures, calls and fuel
+first, and `test/v8.mjs` measures each claim, including the SyntaxError V8 raises for a function body
+that isn't valid syntax even when nothing calls it.
 
 ## Checking a run
 

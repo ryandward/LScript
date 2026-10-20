@@ -77,6 +77,12 @@ inductive Val where
   | clos (env : List (String × Val)) (param : String) (body : Expr)  -- an arrow function, and the names it sees
   deriving Repr
 
+/-- What an importer can be handed: numbers, strings, and frozen objects of those, never a function. -/
+inductive Data : Val → Prop where
+  | num {n} : Data (.num n)
+  | str {s} : Data (.str s)
+  | obj {fs} : (∀ l v, lookup fs l = some v → Data v) → Data (.obj fs true)
+
 inductive Err where
   | syntax (msg : String)
   | reference (name : String)
@@ -316,6 +322,29 @@ theorem runFrom_mono : ∀ (ds : Program) {n env r}, runFrom n env ds = r → r 
           · rename_i e he
             rw [evalExpr_mono n he (fun hx => hr (by rw [← h]; injection hx with hx; rw [hx])) m hm]
             exact h
+
+/-- A run never changes a name already declared: declaring it again is an error. -/
+theorem runFrom_keeps : ∀ (ds : Program) {n env env' x v}, runFrom n env ds = .ok env' →
+    lookup env x = some v → lookup env' x = some v := by
+  intro ds
+  induction ds with
+  | nil => intro n env env' x v h hx; simp only [runFrom, Except.ok.injEq] at h; subst h; exact hx
+  | cons d ds ih =>
+    intro n env env' x v h hx
+    unfold runFrom at h
+    split at h
+    · cases h
+    · split at h
+      · cases h
+      · split at h
+        · cases h
+        · rename_i hfresh
+          split at h
+          · rename_i w _
+            apply ih h
+            have hne : d.name ≠ x := fun e => by subst e; simp [hx] at hfresh
+            simp [lookup, hne, hx]
+          · cases h
 
 theorem run_mono {n p r} (h : run n p = r) (hr : r ≠ .error .outOfFuel) : ∀ m, n ≤ m → run m p = r :=
   runFrom_mono p h hr
