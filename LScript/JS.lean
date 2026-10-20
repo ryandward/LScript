@@ -38,9 +38,14 @@ This file models exactly that fragment: what each line can evaluate to, and ever
   arrow, which comes to the same thing: every line is evaluated in order, and a module that hits any
   error gives no claim.
 
-A call runs a body, so evaluation takes fuel: one unit per call. Running out is the model's own limit,
-not anything V8 does. `evalExpr_mono` and `runFrom_mono` prove that any other result stays the same
-with more fuel, so a module that finishes at some fuel finishes the same way at every larger one.
+A call runs a body, so evaluation takes fuel, and a body runs with one unit less than its call: fuel
+bounds how deeply calls nest. `evalExpr_mono` and `runFrom_mono` prove that any other result stays the
+same with more fuel, so a module that finishes at some fuel finishes the same way at every larger one.
+V8 bounds nesting too, and the model leaves that out: its stack is finite, and a module whose calls
+nest deeper than it allows throws a RangeError. On Node 22 with its default stack, a chain of emitted
+functions each calling the one before runs 10,000 deep and throws at 11,000. The language has no
+recursion and no nested calls, and we haven't found a way to nest calls deeper than about one level per
+declaration, so getting there takes about 10,000 declarations.
 -/
 
 namespace LScript.JS
@@ -227,21 +232,34 @@ def runFrom (n : Nat) (env : List (String × Val)) : Program → Except Err (Lis
 
 def run (n : Nat) (p : Program) : Except Err (List (String × Val)) := runFrom n [] p
 
+/-- Strings joined from the right. `certify/check.sh` has Lean's kernel run the printer, and a string
+    built by appending onto a growing left side, as `String.join` and `String.intercalate` do, costs the
+    kernel time and memory quadratic in the length of the module. -/
+def joinR : List String → String
+  | [] => ""
+  | s :: ss => s ++ joinR ss
+
+/-- `joinR` with `sep` between the strings. -/
+def sepR (sep : String) : List String → String
+  | [] => ""
+  | [s] => s
+  | s :: ss => s ++ (sep ++ sepR sep ss)
+
 def renderAtom : Atom → String
   | .num n => toString n
   | .str s => "\"" ++ s ++ "\""
-  | .path x ls => String.join (x :: ls.map (fun l => "." ++ l))
+  | .path x ls => joinR (x :: ls.map (fun l => "." ++ l))
 
 def renderExpr : Expr → String
   | .atom a => renderAtom a
   | .obj [] => "Object.freeze({})"
-  | .obj fs => "Object.freeze({ " ++ ", ".intercalate (fs.map fun (l, a) => l ++ ": " ++ renderAtom a) ++ " })"
+  | .obj fs => "Object.freeze({ " ++ sepR ", " (fs.map fun (l, a) => l ++ ": " ++ renderAtom a) ++ " })"
   | .arrow x body => "(" ++ x ++ ") => " ++ renderExpr body
-  | .call f a more => renderAtom f ++ String.join ((a :: more).map fun b => "(" ++ renderAtom b ++ ")")
+  | .call f a more => renderAtom f ++ joinR ((a :: more).map fun b => "(" ++ renderAtom b ++ ")")
 
 /-- The text of the module. -/
 def render (p : Program) : String :=
-  String.join (p.map fun d => s!"{if d.exported then "export " else ""}const {d.name} = {renderExpr d.e};\n")
+  joinR (p.map fun d => s!"{if d.exported then "export " else ""}const {d.name} = {renderExpr d.e};\n")
 
 /-! ## Fuel: any result other than running out stays the same with more fuel -/
 

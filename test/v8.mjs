@@ -99,6 +99,9 @@ for (const w of ['eval', 'arguments', 'class', 'let', 'yield', 'await']) {
 expect('a parameter named Object, then a record (the model refuses it)', outcome('const f = (Object) => Object.freeze({ a: 1 });\nexport const r = f(1);\n'), 'run TypeError');
 expect('a body reading a name declared after it (the model refuses it)', outcome('const f = (x) => y;\nconst y = 2;\nexport const r = f(1);\n'), 'ok');
 expect('...and called before that name\'s line', outcome('const f = (x) => y;\nexport const r = f(1);\nconst y = 2;\n'), 'run ReferenceError');
+const chain = (depth) => ['const f0 = (x) => x;', ...Array.from({ length: depth - 1 }, (_, i) => `const f${i + 1} = (x) => f${i}(x);`), `export const v = f${depth - 1}(1);`].join('\n') + '\n';
+expect('calls nested 1,000 deep', outcome(chain(1000)), 'ok');
+expect('calls nested 100,000 deep (V8\'s stack, which the model leaves out)', outcome(chain(100000)), 'run RangeError');
 const fnLib = join(dir, 'fn.mjs');
 writeFileSync(fnLib, 'const f = (x) => x;\nexport const r = f(1);\n');
 expect('an importer naming a const that isn\'t exported', outcome(`import { f } from ${JSON.stringify(fnLib)};\n`), 'run SyntaxError');

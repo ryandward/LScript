@@ -33,7 +33,9 @@ What is trusted rather than proved:
 - the model of the emitted JavaScript, LScript/JS.lean, which `test/v8.mjs` checks against Node;
 - the printer, `JS.render`, which `test/run.sh` checks by running every accepted program;
 - the built-ins the emitted code calls, so far only `Object.freeze`. Code that runs before the module
-  could replace one, and the module trusts that none did.
+  could replace one, and the module trusts that none did;
+- V8's stack, which the model leaves unbounded: calls nested deeper than it allows throw a RangeError,
+  which on Node 22 takes about 10,000 declarations.
 
 ## Slice 2
 
@@ -122,7 +124,8 @@ isn't what gets checked, and it prints the commit it checked against, noting unc
 A checked run doesn't rest on the parser, the `lscript` binary, or the C toolchain that built it. It
 rests on the printer and the model of V8 together, since `compile_sound` is about the program the
 printer prints and the step from that text to what V8 does is the model's; on `Object.freeze` being
-the built-in, and Node behaving as `test/v8.mjs` measures; and on the machine it runs on: Lean's
+the built-in, Node behaving as `test/v8.mjs` measures, and calls nesting no deeper than V8's stack
+allows; and on the machine it runs on: Lean's
 kernel, Lake's build of the commit, and the files as they were on disk when it ran.
 
 A check is evidence for whoever runs it. The project's job is soundness, not making compiled code

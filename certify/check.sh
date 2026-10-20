@@ -21,5 +21,13 @@ if git rev-parse HEAD >/dev/null 2>&1 && [ -n "$(git status --porcelain --untrac
   against="$against with uncommitted changes"
 fi
 "$lake" build LScript >/dev/null 2>&1 || { echo "the LScript library at $against doesn't build"; exit 1; }
-LSCRIPT_SOURCE="$src" LSCRIPT_OUTPUT="$out" "$lake" env lean certify/Check.lean || exit 1
+LSCRIPT_SOURCE="$src" LSCRIPT_OUTPUT="$out" "$lake" env lean certify/Check.lean
+status=$?
+if [ $status = 137 ]; then
+  echo "Lean was killed (exit 137), most likely for running out of memory: the kernel check of $arg needs more than this machine has"
+  exit 1
+elif [ $status != 0 ]; then
+  echo "the kernel check of $arg failed (exit $status)"
+  exit 1
+fi
 echo "checked against $against"
