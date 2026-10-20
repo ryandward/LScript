@@ -23,11 +23,11 @@ def valOfB : Nat → Recs → JS.Val → Ty → Bool
   | 0, _, _, _ => true
   | _ + 1, _, .num n, .int => JS.isSafe n
   | _ + 1, _, .str _, .str => true
-  | n + 1, recs, .obj fs, .record r =>
+  | n + 1, recs, .obj fs frozen, .record r =>
     match lookup recs r with
     | none => false
     | some tfs =>
-      fs.all (fun p => (lookup tfs p.1).isSome) &&
+      frozen && fs.all (fun p => (lookup tfs p.1).isSome) &&
       tfs.all (fun p =>
         match lookup fs p.1, lookup tfs p.1 with
         | some v, some τ => valOfB n recs v τ
@@ -45,7 +45,7 @@ theorem valOfB_complete {recs : Recs} {v τ} (h : ValOf recs v τ) : ∀ n, valO
     | zero => rfl
     | succ n =>
       simp only [valOfB, hl, Bool.and_eq_true, List.all_eq_true]
-      refine ⟨fun p hm => ?_, fun p hm => ?_⟩
+      refine ⟨⟨trivial, fun p hm => ?_⟩, fun p hm => ?_⟩
       · obtain ⟨l, w⟩ := p
         rw [← hk]; exact lookup_isSome_of_mem hm
       · obtain ⟨l, τ'⟩ := p

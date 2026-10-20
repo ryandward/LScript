@@ -30,7 +30,9 @@ What is trusted rather than proved:
 
 - the parser, LScript/Parse.lean;
 - the model of the emitted JavaScript, LScript/JS.lean, which `test/v8.mjs` checks against Node;
-- the printer, `JS.render`, which `test/run.sh` checks by running every accepted program.
+- the printer, `JS.render`, which `test/run.sh` checks by running every accepted program;
+- the built-ins the emitted code calls, so far only `Object.freeze`. Code that runs before the module
+  could replace one, and the module trusts that none did.
 
 ## Slice 2
 
@@ -45,20 +47,23 @@ bob: User = { ann with name: "Bob" }
 ```
 
 ```js
-export const ann = { name: "Ann", age: 42 };
+export const ann = Object.freeze({ name: "Ann", age: 42 });
 export const annName = ann.name;
-export const bob = { name: "Bob", age: ann.age };
+export const bob = Object.freeze({ name: "Bob", age: ann.age });
 ```
 
 An update lists every declared field, reading the ones it doesn't change from the old record, so
 the new object holds exactly the record's fields and never whatever else the old object might hold.
+Every record is frozen when it is made, so code that imports one can't write, add or delete a field,
+or change its prototype: V8 throws, and the value stays what it was declared. A value can't be named
+`Object`, which would shadow the `Object.freeze` the emitted code calls.
 A record's fields, and an update's new values, are literals or names: every intermediate value has a
 name. `type` and `with` are keywords only where the grammar puts them, as TypeScript
 treats `type`, so `type: Int = 1` and `{ type: "click" }` parse; and a field label may be any
 identifier JavaScript allows as a property name, reserved words such as `class` included.
 
-`compile_sound` now says a record's value is an object whose own fields are exactly the declared ones,
-each of its declared type, so no field read the checker accepts gives `undefined`. Two records with
+`compile_sound` now says a record's value is a frozen object whose own fields are exactly the declared
+ones, each of its declared type, so no field read the checker accepts gives `undefined`. Two records with
 the same fields are different types. Functions come in slice 3, with values from outside.
 
 ## Checks

@@ -23,6 +23,10 @@ Node.
 * In an object literal, V8 keeps the last of two equal keys, and `__proto__: v` sets the prototype
   instead of making a field. The model refuses both (`unmodeled`): it is stricter than V8, so for any
   module it runs without an error, it agrees with V8.
+* Every object the module makes is frozen: it is printed as `Object.freeze({ … })`. Writing, adding,
+  deleting or redefining a field of it, or changing its prototype, then throws, so code that imports a
+  record can't change what it holds. This rests on `Object.freeze` being the built-in; a module that
+  binds the name `Object` would shadow it, so the model refuses that name.
 -/
 
 namespace LScript.JS
@@ -51,7 +55,7 @@ inductive Val where
   | num (n : Int)                       -- a double that is exactly the integer n
   | imprecise                           -- a double that is not the integer the literal wrote
   | str (s : String)
-  | obj (fields : List (String × Val))  -- an object whose own fields are exactly these
+  | obj (fields : List (String × Val)) (frozen : Bool)  -- an object whose own fields are exactly these
   | notOwn                              -- a property the value doesn't hold as its own
   deriving Repr
 
@@ -86,6 +90,12 @@ def identShape (s : String) : Bool :=
 /-- A name a `const` can bind: the shape, and not reserved. -/
 def validIdent (s : String) : Bool := identShape s && !reservedWords.contains s
 
+/-- Globals the emitted code calls. A module binding one of these names would shadow it. -/
+def emittedGlobals : List String := ["Object"]
+
+/-- A name a declaration may bind: a valid identifier, not a global the emitted code calls. -/
+def bindable (s : String) : Bool := validIdent s && !emittedGlobals.contains s
+
 /-- A field label. JavaScript allows reserved words as property names (`{ class: 1 }`, `o.class`), so a
     label needs only the shape; `__proto__` is excluded, since an object literal treats it specially. -/
 def validLabel (s : String) : Bool := identShape s && s != "__proto__"
@@ -96,7 +106,7 @@ def validStr (s : String) : Bool :=
 
 /-- `v.l`: the object's own field, or `notOwn`. -/
 def readField : Val → String → Val
-  | .obj fs, l => (lookup fs l).getD .notOwn
+  | .obj fs _, l => (lookup fs l).getD .notOwn
   | _, _ => .notOwn
 
 def readPath (v : Val) (ls : List String) : Val := ls.foldl readField v
@@ -124,7 +134,7 @@ def evalExpr (env : List (String × Val)) : Expr → Except Err Val
     else if !decide (fs.map Prod.fst).Nodup then .error (.unmodeled "two equal keys: V8 keeps the last")
     else
       match evalFields env fs with
-      | .ok vs => .ok (.obj vs)
+      | .ok vs => .ok (.obj vs true)
       | .error e => .error e
 
 /-- Run the module from an environment of names already declared. -/
@@ -132,6 +142,7 @@ def runFrom (env : List (String × Val)) : Program → Except Err (List (String 
   | [] => .ok env
   | d :: ds =>
     if !validIdent d.name then .error (.syntax s!"{d.name} is not an identifier")
+    else if emittedGlobals.contains d.name then .error (.unmodeled s!"{d.name} shadows a global the emitted code calls")
     else if (lookup env d.name).isSome then .error (.syntax s!"{d.name} is declared twice")
     else
       match evalExpr env d.e with
@@ -147,8 +158,8 @@ def renderAtom : Atom → String
 
 def renderExpr : Expr → String
   | .atom a => renderAtom a
-  | .obj [] => "{}"
-  | .obj fs => "{ " ++ ", ".intercalate (fs.map fun (l, a) => l ++ ": " ++ renderAtom a) ++ " }"
+  | .obj [] => "Object.freeze({})"
+  | .obj fs => "Object.freeze({ " ++ ", ".intercalate (fs.map fun (l, a) => l ++ ": " ++ renderAtom a) ++ " })"
 
 /-- The text of the module. -/
 def render (p : Program) : String :=

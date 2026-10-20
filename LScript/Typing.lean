@@ -12,14 +12,15 @@ namespace LScript
 
 abbrev Recs := List (String × List (String × Ty))
 
-/-- A JavaScript value has an LScript type. A record's object has exactly the declared fields. -/
+/-- A JavaScript value has an LScript type. A record's object is frozen and has exactly the declared
+    fields. -/
 inductive ValOf (recs : Recs) : JS.Val → Ty → Prop where
   | int {n} : JS.isSafe n = true → ValOf recs (.num n) .int
   | str {s} : ValOf recs (.str s) .str
   | obj {fs r tfs} : lookup recs r = some tfs →
       (∀ l, (lookup fs l).isSome = (lookup tfs l).isSome) →
       (∀ l v τ, lookup fs l = some v → lookup tfs l = some τ → ValOf recs v τ) →
-      ValOf recs (.obj fs) (.record r)
+      ValOf recs (.obj fs true) (.record r)
 
 /-! ## Association lists -/
 

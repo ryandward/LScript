@@ -59,5 +59,17 @@ expect('"Ann".length  (a value, but not a field: notOwn)', value('"Ann".length')
 expect('Object.keys({ b: 1, a: 2 }) are the literal\'s fields', value('Object.keys({ b: 1, a: 2 })'), '["b","a"]');
 expect('a literal\'s prototype is Object.prototype', value('Object.getPrototypeOf({ a: 1 }) === Object.prototype'), 'true');
 
+// Freezing: what an importer can do to a record the module exports.
+const frozenLib = join(dir, 'frozen.mjs');
+writeFileSync(frozenLib, 'export const ann = Object.freeze({ name: "Ann", age: 42 });\n');
+const tryImport = (body) => outcome(`import { ann } from ${JSON.stringify(frozenLib)};\n${body}\n`);
+expect('an importer writes a field of a frozen record', tryImport('ann.age = "x";'), 'run TypeError');
+expect('an importer adds a field', tryImport('ann.admin = true;'), 'run TypeError');
+expect('an importer deletes a field', tryImport('delete ann.age;'), 'run TypeError');
+expect('an importer redefines a field', tryImport('Object.defineProperty(ann, "age", { value: "x" });'), 'run TypeError');
+expect('an importer changes its prototype', tryImport('Object.setPrototypeOf(ann, null);'), 'run TypeError');
+expect('Object.freeze returns the object it froze', value('(() => { const o = {}; return Object.freeze(o) === o && Object.isFrozen(o); })()'), 'true');
+expect('a module binding Object, then a record (the model refuses it)', outcome('export const Object = 1;\nexport const r = Object.freeze({ a: 1 });\n'), 'run TypeError');
+
 console.log(failed ? `${failed} disagreement(s) with the model` : 'the model agrees with Node');
 process.exit(failed ? 1 : 0);

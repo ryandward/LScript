@@ -30,15 +30,17 @@ const tags = lines.flatMap((l, i) => {
 });
 let failed = 0;
 const fail = (msg) => { failed++; console.log(`FAIL ${msg}`); };
+const broken = new Set();
+const failCheck = (name, msg) => { broken.add(name); fail(msg); };
 
 const names = tags.map((t) => t.name);
 for (const n of names.filter((n, i) => names.indexOf(n) !== i)) fail(`${n} tags two checks`);
 for (const t of tags.filter((t) => t.kind === 'partial')) {
-  if (!/^\s*\| none =>/.test(lines[t.i])) fail(`${t.name} is tagged partial, and isn't a none arm`);
+  if (!/^\s*\| none =>/.test(lines[t.i])) failCheck(t.name, `${t.name} is tagged partial, and isn't a none arm`);
 }
 const code = (l) => l.replace(/--.*$/, '');
 for (const t of tags.filter((t) => t.off !== undefined)) {
-  if (!/^\s*\|/.test(lines[t.i])) { fail(`${t.name} has an off:, and isn't a match arm: an if check is removed by making it false`); continue; }
+  if (!/^\s*\|/.test(lines[t.i])) { failCheck(t.name, `${t.name} has an off:, and isn't a match arm: an if check is removed by making it false`); continue; }
   // The sibling arms: the other arms at this arm's indentation, with their bodies, up to the end of the match.
   const indent = (l) => l.length - l.trimStart().length;
   const n = indent(lines[t.i]);
@@ -48,7 +50,7 @@ for (const t of tags.filter((t) => t.off !== undefined)) {
   const armOf = []; let arm = -1;
   for (let k = start; k < end; k++) { if (indent(lines[k]) === n && /^\s*\|/.test(lines[k])) arm = k; armOf.push(arm); }
   const siblings = lines.slice(start, end).filter((_, k) => armOf[k] !== t.i).map(code).join('\n');
-  if (!siblings.includes(t.off)) fail(`${t.name}: its off: expression \`${t.off}\` isn't in a sibling arm of its match`);
+  if (!siblings.includes(t.off)) failCheck(t.name, `${t.name}: its off: expression \`${t.off}\` isn't in a sibling arm of its match`);
 }
 
 const expects = readdirSync(join(repo, 'test/reject')).filter((f) => f.endsWith('.ls'))
@@ -59,7 +61,7 @@ for (const t of tags) if (!expects.some((e) => e.code === t.name)) fail(`${t.nam
 const cexSource = read('LScript/Counterexamples.lean');
 const registry = [...cexSource.slice(cexSource.indexOf('def counterexamples')).matchAll(/\("([\w-]+)", \[/g)].map((m) => m[1]);
 const loadBearing = tags.filter((t) => t.kind === 'load-bearing');
-for (const t of loadBearing) if (!registry.includes(t.name)) fail(`${t.name} is load-bearing, and Counterexamples.lean has no program for it`);
+for (const t of loadBearing) if (!registry.includes(t.name)) failCheck(t.name, `${t.name} is load-bearing, and Counterexamples.lean has no program for it`);
 for (const n of registry) if (!loadBearing.some((t) => t.name === n)) fail(`Counterexamples.lean has a program for ${n}, which isn't a load-bearing check`);
 
 const lake = process.env.LAKE ?? 'lake';
@@ -85,7 +87,7 @@ theorem refuted : ¬ ∀ {p : Program} {out : JS.Program}, compile p = .ok out �
 if (!builds('LScript.Sound') || !builds('LScript.Counterexamples')) { console.log('FAIL the unchanged repository does not build'); process.exit(1); }
 for (const t of loadBearing) if (registry.includes(t.name) && !control(t.name)) fail(`${t.name}: Lean can't prove its program isn't wrong with every check in place`);
 
-for (const t of tags.filter((t) => t.kind !== 'partial')) {
+for (const t of tags.filter((t) => t.kind !== 'partial' && !broken.has(t.name))) {
   const mutated = lines.slice();
   const before = mutated[t.i];
   mutated[t.i] = t.off ? before.replace(/\.error s!"[^"]*"/, t.off) : before.replace(/\bif (.*?) then \.error/, 'if false then .error');

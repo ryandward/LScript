@@ -1,8 +1,8 @@
-export const ann = { age: 42, name: "Ann" };
+export const ann = Object.freeze({ age: 42, name: "Ann" });
 export const annName = ann.name;
-export const bob = { name: "Bob", age: ann.age };
-export const team = { lead: bob, size: 2 };
+export const bob = Object.freeze({ name: "Bob", age: ann.age });
+export const team = Object.freeze({ lead: bob, size: 2 });
 export const leadName = team.lead.name;
 export const leadAge = team.lead.age;
-export const nothing = {};
-export const same = { name: ann.name, age: ann.age };
+export const nothing = Object.freeze({});
+export const same = Object.freeze({ name: ann.name, age: ann.age });

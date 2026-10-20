@@ -1,6 +1,6 @@
 // Imports a compiled module and checks each name against its declaration in the .ls source. Every
-// value must have its declared type: an Int is a safe integer, a String a string, and a record a plain
-// object with exactly the record's fields, each of its declared type. And every value must be the one
+// value must have its declared type: an Int is a safe integer, a String a string, and a record a frozen
+// plain object with exactly the record's fields, each of its declared type. And every value must be the one
 // written: a literal, a name's value, a field read's result, or, for an update, a new object holding
 // the new values and the old record's other fields.
 import { readFileSync } from 'node:fs';
@@ -18,7 +18,7 @@ const hasType = (v, t) => {
   if (t.kind === 'Int') return Number.isSafeInteger(v);
   if (t.kind === 'String') return typeof v === 'string';
   const fs = recs.get(t.name);
-  return typeof v === 'object' && v !== null && Object.getPrototypeOf(v) === Object.prototype &&
+  return typeof v === 'object' && v !== null && Object.getPrototypeOf(v) === Object.prototype && Object.isFrozen(v) &&
     JSON.stringify(Object.keys(v).sort()) === JSON.stringify(fs.map(([l]) => l).sort()) &&
     fs.every(([l, ft]) => hasType(v[l], ft));
 };

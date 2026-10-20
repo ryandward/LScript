@@ -173,7 +173,7 @@ def checkDecl (ctx : Ctx) : Decl → Except String (Ctx × Option JS.Decl)
       | .ok tfs => .ok ({ ctx with types := (r, .record r) :: ctx.types, recs := (r, tfs) :: ctx.recs }, none)
       | .error e => .error e
   | .val x tn e =>
-    if !JS.validIdent x then .error s!"{x} is not a name JavaScript allows [val-ident]"  -- check: val-ident (load-bearing)
+    if !JS.bindable x then .error s!"{x} is reserved, or a global the emitted code calls [val-ident]"  -- check: val-ident (load-bearing)
     else if (lookup ctx.vals x).isSome then .error s!"{x} is declared twice [val-fresh]"  -- check: val-fresh (load-bearing)
     else
       match resolve ctx.types tn with
