@@ -1,2 +1,2 @@
-// expect: x: the value is String, where Int is declared
+// expect: [atom-type]
 x: Int = "ten"

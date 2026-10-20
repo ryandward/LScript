@@ -1,2 +1,2 @@
-// expect: a record literal is not Int
+// expect: [literal-record]
 n: Int = { x: 1 }

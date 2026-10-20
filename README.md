@@ -25,8 +25,6 @@ export const copy = myAge;
 without a SyntaxError or a ReferenceError, and every name holds a value of its declared type. An `Int`
 is a double that is exactly the integer written, so a literal beyond ±(2^53 − 1) is rejected; a
 `String` is the text written. `checkFrom_declares` says that covers every name in the source.
-LScript/Examples.lean shows each check is load-bearing: every program it rejects would crash, or hold
-the wrong value, in the model of V8.
 
 What is trusted rather than proved:
 
@@ -58,11 +56,29 @@ A record's fields, and an update's new values, are literals or names: every inte
 name.
 
 `compile_sound` now says a record's value is an object whose own fields are exactly the declared ones,
-each of its declared type, so no field read the checker accepts gives `undefined`. The examples show
-what each check prevents: a missing field, a smuggled field, a read of a field the record doesn't
-declare, and an update with a value of the wrong type all hold the wrong value in the model; two equal
-keys and a `__proto__` label are ones V8 treats specially, which the model refuses. Two records with
+each of its declared type, so no field read the checker accepts gives `undefined`. Two records with
 the same fields are different types. Functions come in slice 3, with values from outside.
+
+## Checks
+
+Every rejection ends with the code of the check that made it, as in `User needs its field age
+[literal-complete]`, and every check in LScript/Check.lean is tagged with one of three kinds:
+
+- **load-bearing**: `compile_sound` needs it. LScript/Examples.lean shows the program it stops going
+  wrong: a missing or smuggled field, a field or value of the wrong type, an update declared as another
+  record, a record declared twice, two equal keys, a `__proto__` label, a reserved word, a name declared
+  twice, an integer V8 can't hold, a string that wouldn't print as itself.
+- **policy**: it rejects a program that says two things, such as an update giving one field twice or
+  an alias declared twice, and the proof doesn't need it.
+- **partial**: the program names something that doesn't exist, so there is nothing further to check.
+
+`test/checks.mjs` holds every tag to its kind. Every check must be fired by a program in
+`test/reject/`. Every load-bearing check must be shown in Examples.lean, and `compile_sound` must fail
+to build when it is removed; every policy check must leave `compile_sound` building. The proof takes
+each check's result only through the fact it establishes, never by matching its condition, so a
+removal breaks the proof only where the fact is needed. Facts a declaration establishes, that a
+record's labels are ones an object can carry and that every record type in scope was declared, are
+proved once where the record is declared and kept in the proof's invariant, so no check repeats them.
 
 ## Building
 
@@ -72,4 +88,5 @@ Lean 4.22.0 (`lean-toolchain`), no Mathlib.
 lake build                    # the compiler, and every proof
 .lake/build/bin/lscript F.ls  # writes F.mjs, or says why F.ls is rejected
 test/run.sh                   # accepted and rejected programs, run in Node, and the model against V8
+node test/checks.mjs          # every check against its kind: fired by a test, shown, and needed or not
 ```

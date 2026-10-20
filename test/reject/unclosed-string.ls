@@ -1,2 +1,2 @@
-// expect: not closed on its line
+// expect: [parse]
 s: String = "abc

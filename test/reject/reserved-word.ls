@@ -1,2 +1,2 @@
-// expect: class is not a name JavaScript allows
+// expect: [val-ident]
 class: Int = 1

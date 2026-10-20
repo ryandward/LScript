@@ -1,2 +1,2 @@
-// expect: a is not declared before this line
+// expect: [name-declared]
 a: Int = a

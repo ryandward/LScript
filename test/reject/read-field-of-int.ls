@@ -1,3 +1,3 @@
-// expect: Int has no fields, so .name reads nothing
+// expect: [read-of-record]
 n: Int = 1
 m: String = n.name

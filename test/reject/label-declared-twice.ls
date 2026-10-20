@@ -1,2 +1,2 @@
-// expect: a field of R is declared twice
+// expect: [record-labels]
 type R = { a: Int, a: String }

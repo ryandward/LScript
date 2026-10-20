@@ -1,2 +1,2 @@
-// expect: type Node is not declared before this line
+// expect: [type-declared]
 type Node = { next: Node }

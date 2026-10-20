@@ -69,13 +69,13 @@ def atom : P Atom
   | [] => .error "expected a literal or a name, at the end"
 
 /-- `label: item, ...}` after the opening brace, through the closing one. -/
-partial def fieldsOf {α : Type} (item : P α) : P (List (String × α))
+partial def fieldList {α : Type} (item : P α) : P (List (String × α))
   | .rbrace :: rest => .ok ([], rest)
   | .ident l :: .colon :: rest => do
     let (x, rest) ← item rest
     match rest with
     | .comma :: rest => do
-      let (more, rest) ← fieldsOf item rest
+      let (more, rest) ← fieldList item rest
       pure ((l, x) :: more, rest)
     | .rbrace :: rest => pure ([(l, x)], rest)
     | t :: _ => .error s!"expected , or }, at {repr t}"
@@ -94,10 +94,10 @@ partial def labels : List Tok → List String × List Tok
 
 def expr : P Expr
   | .lbrace :: .ident x :: .kwWith :: rest => do
-    let (fs, rest) ← fieldsOf atom rest
+    let (fs, rest) ← fieldList atom rest
     pure (.update x fs, rest)
   | .lbrace :: rest => do
-    let (fs, rest) ← fieldsOf atom rest
+    let (fs, rest) ← fieldList atom rest
     pure (.record fs, rest)
   | .ident x :: rest =>
     let (ls, rest) := labels rest
@@ -109,7 +109,7 @@ def expr : P Expr
 partial def decls : List Tok → Except String (List Decl)
   | [] => .ok []
   | .kwType :: .ident r :: .eq :: .lbrace :: rest => do
-    let (fs, rest) ← fieldsOf tyItem rest
+    let (fs, rest) ← fieldList tyItem rest
     pure (.record r fs :: (← decls rest))
   | .kwType :: .ident a :: .eq :: .ident t :: rest => do
     pure (.alias a (tyNameOf t) :: (← decls rest))
@@ -118,8 +118,9 @@ partial def decls : List Tok → Except String (List Decl)
     pure (.val x (tyNameOf t) e :: (← decls rest))
   | t :: _ => .error s!"expected `type Name = ...` or `name: Type = value`, at {repr t}"
 
-def parse (src : String) : Except String Program := do
-  let toks ← lex src.toList #[]
-  decls toks.toList
+def parse (src : String) : Except String Program :=
+  match lex src.toList #[] >>= fun toks => decls toks.toList with
+  | .ok p => .ok p
+  | .error e => .error s!"{e} [parse]"
 
 end LScript

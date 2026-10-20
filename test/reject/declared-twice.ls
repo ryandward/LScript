@@ -1,3 +1,3 @@
-// expect: a is declared twice
+// expect: [val-fresh]
 a: Int = 1
 a: Int = 2

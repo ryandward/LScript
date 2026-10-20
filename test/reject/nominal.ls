@@ -1,4 +1,4 @@
-// expect: the value is Pet, where User is declared
+// expect: [atom-type]
 type User = { name: String, age: Int }
 type Pet = { name: String, age: Int }
 rex: Pet = { name: "Rex", age: 3 }

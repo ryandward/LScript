@@ -1,2 +1,2 @@
-// expect: expected `type Name = ...` or `name: Type = value`
+// expect: [parse]
 const x = 1

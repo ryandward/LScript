@@ -1,2 +1,2 @@
-// expect: type Age is not declared before this line
+// expect: [type-declared]
 x: Age = 1

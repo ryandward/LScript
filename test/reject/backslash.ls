@@ -1,2 +1,2 @@
-// expect: may hold only printable ASCII
+// expect: [string-printable]
 s: String = "a\\b"

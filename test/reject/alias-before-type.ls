@@ -1,3 +1,3 @@
-// expect: type B is not declared before this line
+// expect: [type-declared]
 type A = B
 type B = Int

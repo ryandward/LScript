@@ -1,2 +1,2 @@
-// expect: Int is a base type
+// expect: [alias-not-base]
 type Int = String
