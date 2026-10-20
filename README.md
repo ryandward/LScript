@@ -77,8 +77,13 @@ Every rejection ends with the code of the check that made it, as in `User needs 
 check must be fired by a program in `test/reject/`. For a load-bearing check, it removes the check and
 has Lean prove by `decide` that the compiler then accepts the check's counterexample and its output
 fails in the model of V8 or holds a value of the wrong type, so `compile_sound` is false for that
-compiler; the same proof must fail in the real build, where the checker rejects every counterexample.
-For a policy check, `compile_sound` must still build without it. Only a `none` arm may be partial.
+compiler; in the real build, Lean must prove the same program isn't wrong. For a policy check,
+`compile_sound` must still build without it. Only a `none` arm may be partial.
+
+Removing a check is mechanical, never authored. An `if` check is removed by making its condition
+false, so the code falls through to its own continuation. A check written as a match arm names its
+removal with `off:`, and that expression must appear word for word in a sibling arm of the same match,
+which is where the check's own success path continues.
 
 The proof takes each check's result only through the fact it establishes, never by matching its
 condition. Facts a declaration establishes, that a record's labels are ones an object can carry and

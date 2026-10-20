@@ -8,8 +8,8 @@ For every check `Check.lean` tags `load-bearing`, `counterexamples` holds one pr
 removes the check in a copy of the repository and has Lean prove, by `decide`, that the compiler then
 accepts the program and its output goes wrong: it fails in the model of V8, or a name holds a value
 that isn't of its declared type. `wrong_refutes` turns that into the statement that soundness is false
-for that compiler. In the real build the same proof fails, since the checker rejects every
-counterexample (`Examples.lean` checks that), so each program is wrong only without its check.
+for that compiler. In the real build it proves the opposite, `wrong p = false`, for the same program,
+so each program is wrong only without its check.
 
 This module doesn't depend on the proof of `compile_sound`, so it builds in a copy where that proof
 no longer holds.
@@ -115,14 +115,13 @@ def counterexamples : List (String × Program) :=
    ("field-type", [user, .val "a" (.named "User") (.record [("name", .str "A"), ("age", .str "old")])]),
    ("atom-type", [.val "x" .int (.atom (.str "ten"))]),
    ("read-type", [user, ann, .val "age" .int (.path "ann" ["name"])]),
-   ("read-of-record", [.val "n" .int (.atom (.int 1)), .val "m" .int (.path "n" ["foo"])]),
-   ("literal-record", [.val "x" .int (.record [("a", .int 1)])]),
+   ("literal-record", [.val "x" .int (.record [])]),
    ("literal-distinct", [user, .val "a" (.named "User")
       (.record [("name", .str "A"), ("age", .int 1), ("age", .int 2)])]),
    ("literal-complete", [user, .val "a" (.named "User") (.record [("name", .str "A")])]),
    ("update-type", [user, .record "Pet" [("name", .str)], .val "rex" (.named "Pet") (.record [("name", .str "Rex")]),
       .val "u" (.named "User") (.update "rex" [])]),
-   ("update-record", [.val "n" .int (.atom (.int 1)), .val "s" .str (.update "n" [])]),
+   ("update-record", [.val "n" .int (.atom (.int 1)), .val "m" .int (.update "n" [])]),
    ("record-fresh", [.record "R" [("a", .int)], .val "x" (.named "R") (.record [("a", .int 1)]),
       .record "R" [("b", .str)], .val "y" .str (.path "x" ["b"])]),
    ("record-labels", [.record "P" [("__proto__", .int)], .val "p" (.named "P") (.record [("__proto__", .int 1)])]),

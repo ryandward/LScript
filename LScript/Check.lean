@@ -38,6 +38,15 @@ def tyName : Ty → String
 /-- A record's declared fields. Every record type in scope was declared, so they are always there. -/
 def fieldsOf (ctx : Ctx) (r : String) : List (String × Ty) := (lookup ctx.recs r).getD []
 
+def isRecord : Ty → Bool
+  | .record _ => true
+  | _ => false
+
+/-- A type's fields: a record's declared fields, and none for anything else. -/
+def fieldsOfTy (ctx : Ctx) : Ty → List (String × Ty)
+  | .record r => fieldsOf ctx r
+  | _ => []
+
 def resolve (types : List (String × Ty)) : TyName → Except String Ty
   | .int => .ok .int
   | .str => .ok .str
@@ -69,24 +78,23 @@ def inferAtom (ctx : Ctx) : Atom → Except String Ty
 /-- The type at the end of a chain of field reads. -/
 def fieldPath (ctx : Ctx) : Ty → List String → Except String Ty
   | t, [] => .ok t
-  | .record r, l :: ls =>
-    match lookup (fieldsOf ctx r) l with
-    | some t => fieldPath ctx t ls
-    | none => .error s!"{r} has no field {l} [read-declared]"  -- check: read-declared (partial)
-  | t, l :: _ => .error s!"{tyName t} has no fields, so .{l} reads nothing [read-of-record]"  -- check: read-of-record (load-bearing) off: .ok t
+  | t, l :: ls =>
+    match lookup (fieldsOfTy ctx t) l with
+    | some t' => fieldPath ctx t' ls
+    | none => .error s!"{tyName t} has no field {l} [read-declared]"  -- check: read-declared (partial)
 
 /-- Every given field is declared, with a value of its declared type. -/
-def checkFields (ctx : Ctx) (r : String) : List (String × Atom) → Except String Unit
+def checkFields (ctx : Ctx) (t : Ty) : List (String × Atom) → Except String Unit
   | [] => .ok ()
   | (l, a) :: rest =>
-    match lookup (fieldsOf ctx r) l with
-    | none => .error s!"{r} has no field {l} [field-declared]"  -- check: field-declared (load-bearing) off: checkFields ctx r rest
+    match lookup (fieldsOfTy ctx t) l with
+    | none => .error s!"{tyName t} has no field {l} [field-declared]"  -- check: field-declared (load-bearing) off: checkFields ctx t rest
     | some τ =>
       match inferAtom ctx a with
       | .error e => .error e
       | .ok τ' =>
-        if τ' ≠ τ then .error s!"field {l} of {r} is {tyName τ}, and its value is {tyName τ'} [field-type]"  -- check: field-type (load-bearing)
-        else checkFields ctx r rest
+        if τ' ≠ τ then .error s!"field {l} of {tyName t} is {tyName τ}, and its value is {tyName τ'} [field-type]"  -- check: field-type (load-bearing)
+        else checkFields ctx t rest
 
 def emitAtom : Atom → JS.Atom
   | .int n => .num n
@@ -121,31 +129,29 @@ def checkExpr (ctx : Ctx) (e : Expr) (τ : Ty) : Except String JS.Expr :=
         if t' ≠ τ then .error s!"the value is {tyName t'}, where {tyName τ} is declared [read-type]"  -- check: read-type (load-bearing)
         else .ok (.atom (.path x ls))
   | .record fs =>
-    match τ with
-    | .record r =>
-      if !decide (fs.map Prod.fst).Nodup then .error s!"a field of {r} is given twice [literal-distinct]"  -- check: literal-distinct (load-bearing)
-      else
-        match checkFields ctx r fs with
-        | .error err => .error err
-        | .ok () =>
-          if !((fieldsOf ctx r).all fun p => (lookup fs p.1).isSome) then .error s!"{r} needs its field {missingField fs (fieldsOf ctx r)} [literal-complete]"  -- check: literal-complete (load-bearing)
-          else .ok (.obj (fs.map fun (l, a) => (l, emitAtom a)))
-    | t => .error s!"a record literal is not {tyName t} [literal-record]"  -- check: literal-record (load-bearing) off: .ok (.obj (fs.map fun (l, a) => (l, emitAtom a)))
+    if !isRecord τ then .error s!"a record literal is not {tyName τ} [literal-record]"  -- check: literal-record (load-bearing)
+    else if !decide (fs.map Prod.fst).Nodup then .error s!"a field of {tyName τ} is given twice [literal-distinct]"  -- check: literal-distinct (load-bearing)
+    else
+      match checkFields ctx τ fs with
+      | .error err => .error err
+      | .ok () =>
+        if !((fieldsOfTy ctx τ).all fun p => (lookup fs p.1).isSome) then .error s!"{tyName τ} needs its field {missingField fs (fieldsOfTy ctx τ)} [literal-complete]"  -- check: literal-complete (load-bearing)
+        else .ok (.obj (fs.map fun (l, a) => (l, emitAtom a)))
   | .update x fs =>
     match lookup ctx.vals x with
     | none => .error s!"{x} is not declared before this line [update-name-declared]"  -- check: update-name-declared (partial)
-    | some (.record r) =>
-      if .record r ≠ τ then .error s!"{x} is {r}, where {tyName τ} is declared [update-type]"  -- check: update-type (load-bearing)
-      else if !decide (fs.map Prod.fst).Nodup then .error s!"a field of {r} is given twice [update-distinct]"  -- check: update-distinct (policy)
+    | some t =>
+      if !isRecord t then .error s!"{x} is {tyName t}, which has no fields to update [update-record]"  -- check: update-record (load-bearing)
+      else if t ≠ τ then .error s!"{x} is {tyName t}, where {tyName τ} is declared [update-type]"  -- check: update-type (load-bearing)
+      else if !decide (fs.map Prod.fst).Nodup then .error s!"a field of {tyName t} is given twice [update-distinct]"  -- check: update-distinct (policy)
       else
-        match checkFields ctx r fs with
+        match checkFields ctx t fs with
         | .error err => .error err
         | .ok () =>
-          .ok (.obj ((fieldsOf ctx r).map fun (l, _) =>
+          .ok (.obj ((fieldsOfTy ctx t).map fun (l, _) =>
             (l, match lookup fs l with
                 | some a => emitAtom a
                 | none => .path x [l])))
-    | some t => .error s!"{x} is {tyName t}, which has no fields to update [update-record]"  -- check: update-record (load-bearing) off: .ok (.atom (.path x []))
 
 def isBase (a : String) : Bool := a == "Int" || a == "String"
 

@@ -1,3 +1,3 @@
-// expect: [read-of-record]
+// expect: [read-declared]
 n: Int = 1
 m: String = n.name

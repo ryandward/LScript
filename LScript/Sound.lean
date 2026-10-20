@@ -96,15 +96,15 @@ theorem fieldPath_sound {ctx : Ctx} : ∀ (ls : List String) {t t' v},
   | nil => intro t t' v h hv; simp only [fieldPath] at h; cases h; exact hv
   | cons l ls ih =>
     intro t t' v h hv
+    simp only [fieldPath] at h
     cases t with
-    | int => simp [fieldPath] at h
-    | str => simp [fieldPath] at h
+    | int => simp [fieldsOfTy, lookup] at h
+    | str => simp [fieldsOfTy, lookup] at h
     | record r =>
-      simp only [fieldPath] at h
       cases hv with
       | obj hr hk hp =>
         rename_i fs tfs
-        have hf : fieldsOf ctx r = tfs := by simp [fieldsOf, hr]
+        have hf : fieldsOfTy ctx (.record r) = tfs := by simp [fieldsOfTy, fieldsOf, hr]
         rw [hf] at h
         cases hl : lookup tfs l with
         | none => simp [hl] at h
@@ -119,8 +119,8 @@ theorem fieldPath_sound {ctx : Ctx} : ∀ (ls : List String) {t t' v},
               simp [JS.readPath, List.foldl, JS.readField, hfl]
             rw [this]; exact ih h hw
 
-theorem checkFields_spec {ctx r} : ∀ (fs : List (String × Atom)), checkFields ctx r fs = .ok () →
-    ∀ l a, (l, a) ∈ fs → ∃ τ, lookup (fieldsOf ctx r) l = some τ ∧ inferAtom ctx a = .ok τ := by
+theorem checkFields_spec {ctx t} : ∀ (fs : List (String × Atom)), checkFields ctx t fs = .ok () →
+    ∀ l a, (l, a) ∈ fs → ∃ τ, lookup (fieldsOfTy ctx t) l = some τ ∧ inferAtom ctx a = .ok τ := by
   intro fs
   induction fs with
   | nil => intro _ l a h; simp at h
@@ -128,7 +128,7 @@ theorem checkFields_spec {ctx r} : ∀ (fs : List (String × Atom)), checkFields
     obtain ⟨l₀, a₀⟩ := p
     intro h l a hm
     simp only [checkFields] at h
-    cases hl : lookup (fieldsOf ctx r) l₀ with
+    cases hl : lookup (fieldsOfTy ctx t) l₀ with
     | none => simp [hl] at h
     | some τ =>
       simp only [hl] at h
@@ -221,19 +221,22 @@ theorem checkExpr_sound {ctx env e τ je} (h : checkExpr ctx e τ = .ok je) (ha 
           exact ⟨JS.readPath v ls, by simp [JS.evalExpr, JS.evalAtom, hv], fieldPath_sound ls hp hvt⟩
   | record fs =>
     simp only [checkExpr] at h
-    cases τ with
-    | int => simp at h
-    | str => simp at h
-    | record r =>
-      simp only at h
+    split at h
+    · cases h
+    · rename_i hrec'
+      have hrec : isRecord τ = true := by simpa using hrec'
+      cases τ with
+      | int => simp [isRecord] at hrec
+      | str => simp [isRecord] at hrec
+      | record r =>
       obtain ⟨tfs, hr⟩ := record_declared hτ
-      have hf : fieldsOf ctx r = tfs := by simp [fieldsOf, hr]
+      have hf : fieldsOfTy ctx (.record r) = tfs := by simp [fieldsOfTy, fieldsOf, hr]
       obtain ⟨htvalid, _⟩ := labelsOk_spec (hd.labels r tfs hr)
       split at h
       · cases h
       · rename_i hnd'
         have hnd : (fs.map Prod.fst).Nodup := by simpa using hnd'
-        cases hc : checkFields ctx r fs with
+        cases hc : checkFields ctx (.record r) fs with
         | error _ => simp [hc] at h
         | ok u =>
           cases u
@@ -289,11 +292,15 @@ theorem checkExpr_sound {ctx env e τ je} (h : checkExpr ctx e τ = .ok je) (ha 
     cases hx : lookup ctx.vals x with
     | none => simp [hx] at h
     | some t =>
-      cases t with
-      | int => simp [hx] at h
-      | str => simp [hx] at h
-      | record r =>
-        simp only [hx] at h
+      simp only [hx] at h
+      split at h
+      · cases h
+      · rename_i hrec'
+        have hrec : isRecord t = true := by simpa using hrec'
+        cases t with
+        | int => simp [isRecord] at hrec
+        | str => simp [isRecord] at hrec
+        | record r =>
         split at h
         · cases h
         · rename_i hτr'
@@ -301,7 +308,7 @@ theorem checkExpr_sound {ctx env e τ je} (h : checkExpr ctx e τ = .ok je) (ha 
           subst hτr
           split at h
           · cases h
-          · cases hc : checkFields ctx r fs with
+          · cases hc : checkFields ctx (.record r) fs with
             | error _ => simp [hc] at h
             | ok u =>
               cases u
@@ -311,7 +318,7 @@ theorem checkExpr_sound {ctx env e τ je} (h : checkExpr ctx e τ = .ok je) (ha 
               cases hvxt with
               | obj hr hk hp =>
                 rename_i xs tfs
-                have hf : fieldsOf ctx r = tfs := by simp [fieldsOf, hr]
+                have hf : fieldsOfTy ctx (.record r) = tfs := by simp [fieldsOfTy, fieldsOf, hr]
                 rw [hf] at hspec; rw [hf]
                 obtain ⟨htvalid, htnodup⟩ := labelsOk_spec (hd.labels r tfs hr)
                 let pick : String × Ty → String × JS.Atom := fun p =>

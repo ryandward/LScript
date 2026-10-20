@@ -3,15 +3,19 @@
 //   every check     a program in test/reject/ names it, so it can fire (test/run.sh checks the message)
 //   load-bearing    LScript/Counterexamples.lean has a program for it. With the check removed, Lean
 //                   proves by `decide` that the compiler accepts the program and its output goes wrong,
-//                   so compile_sound is false for that compiler. In the real build the same proof must
-//                   fail: the program is wrong only without its check.
+//                   so compile_sound is false for that compiler. In the real build Lean proves the
+//                   program isn't wrong: it is wrong only without its check.
 //   policy          with the check removed, compile_sound still builds: the theorem holds without it
 //   partial         only a `none` arm may be partial: the program names something that doesn't exist,
 //                   and there is nothing to continue with
 //
-// A check is removed by making its condition false, or, for a check written as a match arm, by
-// replacing its error with the `off:` expression its tag gives. Removal happens in a copy of the
-// repository, one check at a time. Run with LAKE=/path/to/lake if lake isn't on the PATH.
+// Removal is mechanical, never authored. An `if` check is removed by making its condition false, so it
+// falls through to the code's own continuation, and it may not carry an `off:`. A check written as a
+// match arm is removed by replacing its error with its `off:` expression, which must appear word for
+// word in a sibling arm of the same match: where the check's own success path continues, not a result
+// written for the audit, and not one from elsewhere in the function that would skip other checks too.
+// Removal happens in a copy of the repository, one check at a time. Run with LAKE=/path/to/lake if lake
+// isn't on the PATH.
 import { spawnSync } from 'node:child_process';
 import { cpSync, mkdtempSync, readFileSync, readdirSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -32,6 +36,20 @@ for (const n of names.filter((n, i) => names.indexOf(n) !== i)) fail(`${n} tags 
 for (const t of tags.filter((t) => t.kind === 'partial')) {
   if (!/^\s*\| none =>/.test(lines[t.i])) fail(`${t.name} is tagged partial, and isn't a none arm`);
 }
+const code = (l) => l.replace(/--.*$/, '');
+for (const t of tags.filter((t) => t.off !== undefined)) {
+  if (!/^\s*\|/.test(lines[t.i])) { fail(`${t.name} has an off:, and isn't a match arm: an if check is removed by making it false`); continue; }
+  // The sibling arms: the other arms at this arm's indentation, with their bodies, up to the end of the match.
+  const indent = (l) => l.length - l.trimStart().length;
+  const n = indent(lines[t.i]);
+  const inMatch = (k) => lines[k].trim() === '' || indent(lines[k]) > n || (indent(lines[k]) === n && /^\s*\|/.test(lines[k]));
+  let start = t.i; while (start > 0 && inMatch(start - 1)) start--;
+  let end = t.i + 1; while (end < lines.length && inMatch(end)) end++;
+  const armOf = []; let arm = -1;
+  for (let k = start; k < end; k++) { if (indent(lines[k]) === n && /^\s*\|/.test(lines[k])) arm = k; armOf.push(arm); }
+  const siblings = lines.slice(start, end).filter((_, k) => armOf[k] !== t.i).map(code).join('\n');
+  if (!siblings.includes(t.off)) fail(`${t.name}: its off: expression \`${t.off}\` isn't in a sibling arm of its match`);
+}
 
 const expects = readdirSync(join(repo, 'test/reject')).filter((f) => f.endsWith('.ls'))
   .map((f) => ({ f, code: /^\/\/ expect: \[([\w-]+)\]/.exec(read(`test/reject/${f}`))?.[1] }));
@@ -49,6 +67,13 @@ const work = mkdtempSync(join(tmpdir(), 'lscript-checks-'));
 cpSync(repo, work, { recursive: true, filter: (src) => !src.includes(`${repo}.git`) });
 const run = (args) => spawnSync(lake, args, { cwd: work, stdio: 'pipe' }).status === 0;
 const builds = (target) => run(['build', target]);
+const control = (name) => {
+  writeFileSync(join(work, 'Control.lean'), `import LScript.Counterexamples
+open LScript
+example : wrong (counterexample "${name}") = false := by decide
+`);
+  return run(['env', 'lean', 'Control.lean']);
+};
 const refutes = (name) => {
   writeFileSync(join(work, 'Refute.lean'), `import LScript.Counterexamples
 open LScript
@@ -58,7 +83,7 @@ theorem refuted : ¬ ∀ {p : Program} {out : JS.Program}, compile p = .ok out �
   return run(['env', 'lean', 'Refute.lean']);
 };
 if (!builds('LScript.Sound') || !builds('LScript.Counterexamples')) { console.log('FAIL the unchanged repository does not build'); process.exit(1); }
-for (const t of loadBearing) if (registry.includes(t.name) && refutes(t.name)) fail(`${t.name}: its program is wrong even with every check in place`);
+for (const t of loadBearing) if (registry.includes(t.name) && !control(t.name)) fail(`${t.name}: Lean can't prove its program isn't wrong with every check in place`);
 
 for (const t of tags.filter((t) => t.kind !== 'partial')) {
   const mutated = lines.slice();
