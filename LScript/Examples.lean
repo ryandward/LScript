@@ -3,64 +3,95 @@ import LScript.Sound
 /-!
 # The checks are what the theorem rests on
 
-Each rejected program below would break `compile_sound`'s conclusion if the checker let it through:
-its module, emitted unchecked, either fails in the model of V8 or holds a value that isn't of its
-declared type. And the checker rejects each one.
+Each check below is shown two ways: the module a compiler without that check would emit either fails
+in the model of V8 or holds a value that isn't of its declared type; and the checker rejects the
+program that would produce it.
 -/
 
 namespace LScript
 
 open JS (Val Err)
 
-def ages : Program :=
-  [.type "Age" .int, .val "myAge" (.alias "Age") (.int 10), .val "greeting" .str (.str "hi"),
-   .val "copy" (.alias "Age") (.var "myAge")]
+def userDecl : Decl := .record "User" [("name", .str), ("age", .int)]
+def annDecl : Decl := .val "ann" (.named "User") (.record [("name", .str "Ann"), ("age", .int 42)])
 
-/-- The program in the README compiles to three `export const` lines. -/
-example : (compile ages).toOption = some [⟨"myAge", .num 10⟩, ⟨"greeting", .str "hi"⟩, ⟨"copy", .ident "myAge"⟩] := rfl
-example : JS.render (emit ages) =
-    "export const myAge = 10;\nexport const greeting = \"hi\";\nexport const copy = myAge;\n" := rfl
+def users : Program :=
+  [userDecl, annDecl,
+   .val "annName" .str (.path "ann" ["name"]),
+   .val "bob" (.named "User") (.update "ann" [("name", .str "Bob")])]
 
-/-- Reading a name before its line: a ReferenceError in V8. -/
-def forward : Program := [.val "a" .int (.var "b"), .val "b" .int (.int 1)]
-example : JS.run (emit forward) = .error (.reference "b") := rfl
-example : (check forward).toOption = none := rfl
+/-- The program compiles to an object literal, a property read, and an update that lists every
+    declared field: the new name, and the old age read from `ann`. -/
+example : JS.render ((compile users).toOption.getD []) =
+    "export const ann = { name: \"Ann\", age: 42 };\nexport const annName = ann.name;\nexport const bob = { name: \"Bob\", age: ann.age };\n" := rfl
 
-/-- Reading a name on its own line: the same ReferenceError. -/
-def selfRef : Program := [.val "a" .int (.var "a")]
-example : JS.run (emit selfRef) = .error (.reference "a") := rfl
-example : (check selfRef).toOption = none := rfl
+def userRecs : Recs := [("User", [("name", .str), ("age", .int)])]
 
-/-- A name declared twice: a SyntaxError. -/
-def twice : Program := [.val "a" .int (.int 1), .val "a" .int (.int 2)]
-example : JS.run (emit twice) = .error (.syntax "a is declared twice") := rfl
-example : (check twice).toOption = none := rfl
+/-- Slice 1's checks still hold: a name read before its line is a ReferenceError. -/
+example : JS.run [⟨"a", .atom (.path "b" [])⟩, ⟨"b", .atom (.num 1)⟩] = .error (.reference "b") := rfl
+example : (check [.val "a" .int (.atom (.var "b")), .val "b" .int (.atom (.int 1))]).toOption = none := rfl
 
-/-- A reserved word: a SyntaxError. -/
-def reserved : Program := [.val "class" .int (.int 1)]
-example : JS.run (emit reserved) = .error (.syntax "class is not an identifier") := rfl
-example : (check reserved).toOption = none := rfl
+/-! ### Reading a field the record doesn't declare -/
 
-/-- An integer V8 can't hold: no error, but the value isn't the integer written. -/
-def big : Program := [.val "big" .int (.int 9007199254740993)]
-example : JS.run (emit big) = .ok [("big", .imprecise)] := rfl
-example : ¬ ValOf .imprecise .int := fun h => h
-example : (check big).toOption = none := rfl
+/-- V8 gives `undefined`, and the model a value of no type. -/
+example : JS.run [⟨"ann", .obj [("name", .str "Ann"), ("age", .num 42)]⟩, ⟨"e", .atom (.path "ann" ["email"])⟩] =
+    .ok [("e", .notOwn), ("ann", .obj [("name", .str "Ann"), ("age", .num 42)])] := rfl
+theorem notOwn_untyped {recs τ} : ¬ ValOf recs .notOwn τ := fun h => by cases h
+example : (check (users ++ [.val "e" .str (.path "ann" ["email"])])).toOption = none := rfl
 
-/-- A string where an `Int` was declared: no error, but the value isn't an `Int`. -/
-def mismatch : Program := [.type "Age" .int, .val "age" (.alias "Age") (.str "ten")]
-example : JS.run (emit mismatch) = .ok [("age", .str "ten")] := rfl
-example : ¬ ValOf (.str "ten") .int := fun h => h
-example : (check mismatch).toOption = none := rfl
+/-- Reading a field of an `Int` is the same: no error, and no value. -/
+example : JS.readPath (.num 42) ["name"] = .notOwn := rfl
+example : (check (users ++ [.val "n" .int (.atom (.int 1)), .val "e" .str (.path "n" ["name"])])).toOption = none := rfl
 
-/-- A string that wouldn't print as itself. -/
-def backslash : Program := [.val "s" .str (.str "a\\b")]
-example : (match JS.run (emit backslash) with | .error (.syntax _) => true | _ => false) = true := rfl
-example : (check backslash).toOption = none := rfl
+/-! ### A literal missing a field, or carrying one more -/
 
-/-- The largest safe integers are accepted, and held exactly. -/
-def edges : Program := [.val "hi" .int (.int 9007199254740991), .val "lo" .int (.int (-9007199254740991))]
-example : JS.run (emit edges) = .ok [("lo", .num (-9007199254740991)), ("hi", .num 9007199254740991)] := rfl
-example : (check edges).toOption.isSome = true := rfl
+/-- Missing `age`: the object isn't a `User`. -/
+example : ¬ ValOf userRecs (.obj [("name", .str "Ann")]) (.record "User") := by
+  intro h; cases h with
+  | obj hl hk _ =>
+    simp only [userRecs, lookup] at hl; cases hl
+    have := hk "age"; simp [lookup] at this
+example : (check [userDecl, .val "a" (.named "User") (.record [("name", .str "Ann")])]).toOption = none := rfl
+
+/-- A smuggled `admin` field: the object isn't a `User` either, since a record has exactly its fields. -/
+example : ¬ ValOf userRecs (.obj [("name", .str "Ann"), ("age", .num 42), ("admin", .num 1)]) (.record "User") := by
+  intro h; cases h with
+  | obj hl hk _ =>
+    simp only [userRecs, lookup] at hl; cases hl
+    have := hk "admin"; simp [lookup] at this
+example : (check [userDecl, .val "a" (.named "User")
+    (.record [("name", .str "Ann"), ("age", .int 42), ("admin", .int 1)])]).toOption = none := rfl
+
+/-! ### Labels V8 treats specially -/
+
+/-- Two equal keys: V8 keeps the last. The model refuses it. -/
+example : JS.run [⟨"a", .obj [("age", .num 1), ("age", .str "x")]⟩] =
+    .error (.unmodeled "two equal keys: V8 keeps the last") := rfl
+example : (check [userDecl, .val "a" (.named "User")
+    (.record [("name", .str "Ann"), ("age", .int 1), ("age", .int 2)])]).toOption = none := rfl
+
+/-- `__proto__: v` sets the prototype instead of making a field. The model refuses it. -/
+example : (match JS.run [⟨"a", .obj [("__proto__", .num 1)]⟩] with | .error (.unmodeled _) => true | _ => false) = true := rfl
+example : (check [.record "P" [("__proto__", .int)]]).toOption = none := rfl
+
+/-! ### An update -/
+
+/-- A new value of the wrong type: the object isn't a `User`. -/
+example : ¬ ValOf userRecs (.obj [("name", .str "Bob"), ("age", .str "old")]) (.record "User") := by
+  intro h; cases h with
+  | obj hl _ hp =>
+    simp only [userRecs, lookup] at hl; cases hl
+    have := hp "age" (.str "old") .int (by simp [lookup]) (by simp [lookup]); cases this
+example : (check [userDecl, annDecl, .val "b" (.named "User") (.update "ann" [("age", .str "old")])]).toOption = none := rfl
+
+/-- A field the record doesn't declare. -/
+example : (check [userDecl, annDecl, .val "b" (.named "User") (.update "ann" [("email", .str "x")])]).toOption = none := rfl
+
+/-! ### Nominal records -/
+
+/-- Two records with the same fields are different types: a `Pet` is not a `User`. -/
+example : (check [userDecl, .record "Pet" [("name", .str), ("age", .int)],
+    .val "p" (.named "Pet") (.record [("name", .str "Rex"), ("age", .int 3)]),
+    .val "u" (.named "User") (.atom (.var "p"))]).toOption = none := rfl
 
 end LScript

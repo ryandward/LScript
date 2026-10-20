@@ -1,2 +1,2 @@
-// expect: x is declared Int, and its value is String
+// expect: x: the value is String, where Int is declared
 x: Int = "ten"

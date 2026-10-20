@@ -1,3 +1,3 @@
-// expect: name is declared Int, and its value is String
+// expect: name: the value is String, where Int is declared
 type Age = Int
 name: Age = "ann"

@@ -1,3 +1,4 @@
 .lake/
-*.mjs
-!test/v8.mjs
+# compiled output, written next to each test program
+test/accept/*.mjs
+test/reject/*.mjs

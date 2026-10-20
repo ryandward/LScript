@@ -44,5 +44,17 @@ writeFileSync(file, `export const s = "${printable}";\n`);
 const { s } = await import(file);
 expect('every printable ASCII but " and \\ prints as itself', String(s === printable), 'true');
 
+// Records: what V8 does with the object literals and property reads the compiler emits.
+const value = (expr) => { try { return JSON.stringify(eval(`(${expr})`)) ?? 'undefined'; } catch (e) { return e.constructor.name; } };
+expect('({ a: 1, a: "x" }).a  (V8 keeps the last; the model refuses it)', value('({ a: 1, a: "x" }).a'), '"x"');
+expect('Object.keys({ __proto__: 1 })  (no field; the model refuses it)', value('Object.keys({ __proto__: 1 })'), '[]');
+expect('({ __proto__: {} }).__proto__ is not an own field', value('Object.hasOwn({ __proto__: {} }, "__proto__")'), 'false');
+expect('({ name: "a" }).email  (not an error: notOwn)', value('({ name: "a" }).email'), 'undefined');
+expect('typeof ({}).toString  (inherited: notOwn)', value('typeof ({}).toString'), '"function"');
+expect('(42).name  (not an error: notOwn)', value('(42).name'), 'undefined');
+expect('"Ann".length  (a value, but not a field: notOwn)', value('"Ann".length'), '3');
+expect('Object.keys({ b: 1, a: 2 }) are the literal\'s fields', value('Object.keys({ b: 1, a: 2 })'), '["b","a"]');
+expect('a literal\'s prototype is Object.prototype', value('Object.getPrototypeOf({ a: 1 }) === Object.prototype'), 'true');
+
 console.log(failed ? `${failed} disagreement(s) with the model` : 'the model agrees with Node');
 process.exit(failed ? 1 : 0);
