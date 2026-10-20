@@ -14,10 +14,11 @@ old record, so the emitted object lists exactly the declared fields, never what 
 also hold.
 
 Every rejection ends with the code of the check that made it, and every check is tagged with its
-kind: `load-bearing` (`compile_sound` needs it, and `Examples.lean` shows the program it stops going
-wrong), `policy` (it rejects a program that says two things, and the proof doesn't need it), or
-`partial` (the program names something that doesn't exist, so there is nothing to check further).
-`test/checks.sh` holds each tag to its kind.
+kind: `load-bearing` (without it, the compiler accepts the check's program in `Counterexamples.lean`
+and that program goes wrong, so `compile_sound` is false), `policy` (it rejects a program that says
+two things, and `compile_sound` still holds without it), or `partial` (a `none` arm: the program names
+something that doesn't exist, so there is nothing to continue with). `test/checks.mjs` holds each tag
+to its kind.
 -/
 
 namespace LScript
@@ -72,7 +73,7 @@ def fieldPath (ctx : Ctx) : Ty → List String → Except String Ty
     match lookup (fieldsOf ctx r) l with
     | some t => fieldPath ctx t ls
     | none => .error s!"{r} has no field {l} [read-declared]"  -- check: read-declared (partial)
-  | t, l :: _ => .error s!"{tyName t} has no fields, so .{l} reads nothing [read-of-record]"  -- check: read-of-record (partial)
+  | t, l :: _ => .error s!"{tyName t} has no fields, so .{l} reads nothing [read-of-record]"  -- check: read-of-record (load-bearing) off: .ok t
 
 /-- Every given field is declared, with a value of its declared type. -/
 def checkFields (ctx : Ctx) (r : String) : List (String × Atom) → Except String Unit
@@ -129,7 +130,7 @@ def checkExpr (ctx : Ctx) (e : Expr) (τ : Ty) : Except String JS.Expr :=
         | .ok () =>
           if !((fieldsOf ctx r).all fun p => (lookup fs p.1).isSome) then .error s!"{r} needs its field {missingField fs (fieldsOf ctx r)} [literal-complete]"  -- check: literal-complete (load-bearing)
           else .ok (.obj (fs.map fun (l, a) => (l, emitAtom a)))
-    | t => .error s!"a record literal is not {tyName t} [literal-record]"  -- check: literal-record (partial)
+    | t => .error s!"a record literal is not {tyName t} [literal-record]"  -- check: literal-record (load-bearing) off: .ok (.obj (fs.map fun (l, a) => (l, emitAtom a)))
   | .update x fs =>
     match lookup ctx.vals x with
     | none => .error s!"{x} is not declared before this line [update-name-declared]"  -- check: update-name-declared (partial)
@@ -144,7 +145,7 @@ def checkExpr (ctx : Ctx) (e : Expr) (τ : Ty) : Except String JS.Expr :=
             (l, match lookup fs l with
                 | some a => emitAtom a
                 | none => .path x [l])))
-    | some t => .error s!"{x} is {tyName t}, which has no fields to update [update-record]"  -- check: update-record (partial)
+    | some t => .error s!"{x} is {tyName t}, which has no fields to update [update-record]"  -- check: update-record (load-bearing) off: .ok (.atom (.path x []))
 
 def isBase (a : String) : Bool := a == "Int" || a == "String"
 

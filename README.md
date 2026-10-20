@@ -66,21 +66,33 @@ the same fields are different types. Functions come in slice 3, with values from
 Every rejection ends with the code of the check that made it, as in `User needs its field age
 [literal-complete]`, and every check in LScript/Check.lean is tagged with one of three kinds:
 
-- **load-bearing**: `compile_sound` needs it. LScript/Examples.lean shows the program it stops going
-  wrong: a missing or smuggled field, a field or value of the wrong type, an update declared as another
-  record, a record declared twice, two equal keys, a `__proto__` label, a reserved word, a name declared
-  twice, an integer V8 can't hold, a string that wouldn't print as itself.
+- **load-bearing**: without it, the compiler would accept a program that goes wrong.
+  LScript/Counterexamples.lean holds one such program per check.
 - **policy**: it rejects a program that says two things, such as an update giving one field twice or
-  an alias declared twice, and the proof doesn't need it.
-- **partial**: the program names something that doesn't exist, so there is nothing further to check.
+  an alias declared twice, and `compile_sound` still holds without it.
+- **partial**: a `none` arm, where the program names something that doesn't exist and there is nothing
+  to continue with.
 
-`test/checks.mjs` holds every tag to its kind. Every check must be fired by a program in
-`test/reject/`. Every load-bearing check must be shown in Examples.lean, and `compile_sound` must fail
-to build when it is removed; every policy check must leave `compile_sound` building. The proof takes
-each check's result only through the fact it establishes, never by matching its condition, so a
-removal breaks the proof only where the fact is needed. Facts a declaration establishes, that a
-record's labels are ones an object can carry and that every record type in scope was declared, are
-proved once where the record is declared and kept in the proof's invariant, so no check repeats them.
+`test/checks.mjs` holds every tag to its kind, in a copy of the repository, one check at a time. Every
+check must be fired by a program in `test/reject/`. For a load-bearing check, it removes the check and
+has Lean prove by `decide` that the compiler then accepts the check's counterexample and its output
+fails in the model of V8 or holds a value of the wrong type, so `compile_sound` is false for that
+compiler; the same proof must fail in the real build, where the checker rejects every counterexample.
+For a policy check, `compile_sound` must still build without it. Only a `none` arm may be partial.
+
+The proof takes each check's result only through the fact it establishes, never by matching its
+condition. Facts a declaration establishes, that a record's labels are ones an object can carry and
+that every record type in scope was declared, are proved once where the record is declared and kept in
+the proof's invariant, so no check repeats them.
+
+## Choices, not necessities
+
+Restrictions the language makes that neither soundness nor V8 requires, kept for now:
+
+- Names and labels are ASCII letters, digits and `_`. JavaScript also allows `$` and Unicode.
+- Integer literals are decimal.
+- A string literal can't hold an escape or a character outside printable ASCII. Lifting this needs a
+  printer that writes escapes, and a V8 measurement for each.
 
 ## Building
 
@@ -90,5 +102,5 @@ Lean 4.22.0 (`lean-toolchain`), no Mathlib.
 lake build                    # the compiler, and every proof
 .lake/build/bin/lscript F.ls  # writes F.mjs, or says why F.ls is rejected
 test/run.sh                   # accepted and rejected programs, run in Node, and the model against V8
-node test/checks.mjs          # every check against its kind: fired by a test, shown, and needed or not
+node test/checks.mjs          # every check against its kind: fired by a test, and refuting soundness when removed
 ```
