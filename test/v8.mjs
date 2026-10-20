@@ -147,5 +147,26 @@ for (const [label, v, want] of [['exactly name and age', J('{"name": "a", "age":
 expect('a conditional with an arrow branch', await moduleValue('const f = ((typeof "s" === "string") ? ((x) => x) : 0);\nexport const r = f(5);\n', 'r'), '5');
 expect('an arrow called where it is written', await moduleValue('export const r = ((x) => x)(5);\n', 'r'), '5');
 
+// Entries: the boundary helper and the glue around a parse, as Examples.lean pins them. The parse here
+// returns what it is handed, so this measures what an entry hands its parse.
+const helper = 'const $json = (s) => { if (typeof s !== "string") return undefined; try { return JSON.parse(s); } catch { return undefined; } };';
+const glueLib = join(dir, 'glue.mjs');
+writeFileSync(glueLib, `${helper}\nexport const seen = ((p) => (input) => p($json(input)))((j) => j);\n`);
+const { seen } = await import(glueLib);
+const deep = '['.repeat(1000000) + ']'.repeat(1000000);
+expect('an entry hands its parse JSON.parse of a string', run(() => seen('{"a": [1, null, true]}')), '{"a":[1,null,true]}');
+expect('...undefined for text that doesn\'t parse', run(() => seen('{a: 1}')), 'undefined');
+expect('...undefined for anything but a string', run(() => seen(42)), 'undefined');
+expect('...undefined for a String object', run(() => seen(new String('1'))), 'undefined');
+expect('...undefined for a Proxy, without running a trap', run(() => seen(new Proxy({}, new Proxy({}, { get: () => () => { throw new Error('trap'); } })))), 'undefined');
+expect('...and never throws, even for nesting a million deep', run(() => { const v = seen(deep); return v === undefined || Array.isArray(v); }), 'true');
+const settles = async (source) => {
+  const f = join(dir, `m${n++}.mjs`);
+  writeFileSync(f, source);
+  return Promise.race([import(f).then(() => 'resolved', () => 'rejected'), new Promise((r) => setTimeout(() => r('still waiting'), 500))]);
+};
+expect('import() of a module exporting a function named then (the model refuses it)', await settles(`${helper}\nexport const then = ((p) => (input) => p($json(input)))((j) => 0);\n`), 'still waiting');
+expect('...and of one exporting the number then', await settles('export const then = 1;\n'), 'resolved');
+
 console.log(failed ? `${failed} disagreement(s) with the model` : 'the model agrees with Node');
 process.exit(failed ? 1 : 0);

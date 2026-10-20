@@ -23,6 +23,13 @@ exported, and a record holds only data.
     inc: Int -> Int = (x) => x
     rename: String -> User -> User = (n) => (u) => { u with name: n }
     bob: User = rename("Bob")(ann)
+
+An entry is how data comes in. It is an exported function that an importer calls with anything: if
+that is a string `JSON.parse` reads as a value of the entry's input type, the entry gives the value to
+its success function, and otherwise it gives its failure value.
+
+    nameOf: User -> String = (u) => u.name
+    entry greet: User -> String = nameOf else "not a user"
 -/
 
 namespace LScript
@@ -42,11 +49,13 @@ inductive Ty where
   | str
   | record (name : String)
   | fn (param result : Ty)
+  | entry (input result : Ty)    -- an entry's own type, which no source can write, so no code can use one
   deriving Repr, DecidableEq
 
-/-- A type whose values are data: anything but a function. -/
+/-- A type whose values are data: anything but a function or an entry. -/
 def isData : Ty → Bool
   | .fn _ _ => false
+  | .entry _ _ => false
   | _ => true
 
 /-- A literal or a name. -/
@@ -69,6 +78,7 @@ inductive Decl where
   | alias (name : String) (rhs : TyName)                     -- type Age = Int
   | record (name : String) (fields : List (String × TyName)) -- type User = { name: String, age: Int }
   | val (name : String) (ty : TyName) (e : Expr)             -- ann: User = { … }
+  | entry (name : String) (ty : TyName) (ok : String) (fail : Atom)  -- entry greet: User -> String = nameOf else "?"
   deriving Repr, DecidableEq
 
 abbrev Program := List Decl

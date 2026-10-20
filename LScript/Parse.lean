@@ -11,13 +11,15 @@ fuel is a constant rather than the file's length because the kernel computes `Li
 recursing once per element, which overflows its stack on a file of a few thousand lines.
 
     decl  := "type" Name "=" type | "type" Name "=" "{" (label ":" type),* "}" | name ":" type "=" expr
+           | "entry" name ":" type "=" name "else" atom
     type  := Name | "(" type ")" | type "->" type                     -- the arrow groups to the right
     expr  := atom | name ("." label)+ | "{" (label ":" atom),* "}" | "{" name "with" (label ":" atom),* "}"
            | "(" name ")" "=>" expr | name ("(" atom ")")+
     atom  := integer | string | name
 
-`type` and `with` are keywords only where the grammar puts them, as TypeScript treats `type`: `type`
-followed by a name at the start of a declaration, and `with` after `{ name`. Anywhere else they are
+`type`, `entry`, `else` and `with` are keywords only where the grammar puts them, as TypeScript treats
+`type`: `type` or `entry` followed by a name at the start of a declaration, `else` after an entry's
+success function, and `with` after `{ name`. Anywhere else they are
 ordinary names, so `type: Int = 1`, `{ type: "click" }` and `type type = Int` all parse.
 -/
 
@@ -202,6 +204,15 @@ def decls : Nat → List Tok → Except String (List Decl)
   | n + 1, .ident "type" :: .ident a :: .eq :: rest => do
     let (t, rest) ← ty n rest
     pure (.alias a t :: (← decls n rest))
+  | n + 1, .ident "entry" :: .ident x :: .colon :: rest => do
+    let (t, rest) ← ty n rest
+    match rest with
+    | .eq :: .ident ok :: .ident "else" :: rest => do
+      let (fail, rest) ← atom rest
+      pure (.entry x t ok fail :: (← decls n rest))
+    | .eq :: _ => .error "an entry is `entry name: Input -> Result = success else failure`, where success names a function"
+    | t' :: _ => .error s!"expected =, at {t'.show}"
+    | [] => .error "expected =, at the end"
   | n + 1, .ident x :: .colon :: rest => do
     let (t, rest) ← ty n rest
     match rest with

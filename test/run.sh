@@ -3,7 +3,8 @@
 # what it declares, and passes certify/check.sh, which has Lean's kernel check the run from the files on
 # disk; the check refuses a compiled file with a line appended, a source with a byte changed, and a
 # symlinked source whose output beside the link differs from the one beside its target; every
-# program in reject/ is refused for the reason its first line names; and the JavaScript model agrees
+# program in reject/ is refused for the reason its first line names; test/entry.mjs calls the entries
+# of test/accept/entry.mjs with good, bad and hostile input; and the JavaScript model agrees
 # with Node.
 set -u
 cd "$(dirname "$0")/.."
@@ -18,6 +19,7 @@ for f in test/accept/*.ls; do
   if ! LAKE="$LAKE" certify/check.sh "$f" >/dev/null 2>&1; then echo "CHECK REFUSED $f"; fail=1; continue; fi
   echo "ok   $f (checked by Lean's kernel)"
 done
+node test/entry.mjs || { echo "WRONG ENTRIES: run node test/entry.mjs"; fail=1; }
 w=$(mktemp -d)
 cp test/accept/age.ls test/accept/age.mjs "$w/"
 echo 'throw new TypeError("not what the check read");' >> "$w/age.mjs"

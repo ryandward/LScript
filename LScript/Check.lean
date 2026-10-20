@@ -19,6 +19,13 @@ have exactly the type its arguments and the declared result call for, `A -> B ->
 type `T`, so a call may give fewer arguments than the function takes and get a function back. A name
 of a function type is emitted without `export`: only data leaves the module.
 
+An entry's type is a function from its input to a data result; its input is `Int`, `String`, or a
+record of those. Its parse tests that the value `JSON.parse` gave is JSON for the input, a record being
+a plain object with exactly the record's labels, and only then builds the input as a fresh frozen
+record of the declared fields and calls the success function with it; anything else gets the failure
+value. An entry's name is exported, and its type is one no source can write, so nothing in the
+program can use it.
+
 Every rejection ends with the code of the check that made it, and every check is tagged with its
 kind: `load-bearing` (without it, the compiler accepts the check's program in `Counterexamples.lean`
 and that program goes wrong, so `compile_sound` is false), `policy` (it rejects a program that says
@@ -41,6 +48,7 @@ def tyName : Ty → String
   | .str => "String"
   | .record r => r
   | .fn a b => (match a with | .fn _ _ => "(" ++ tyName a ++ ")" | _ => tyName a) ++ " -> " ++ tyName b
+  | .entry a b => "entry " ++ tyName a ++ " -> " ++ tyName b
 
 /-- A record's declared fields. Every record type in scope was declared, so they are always there. -/
 def fieldsOf (ctx : Ctx) (r : String) : List (String × Ty) := (ctx.recs.find r).getD []
@@ -213,6 +221,55 @@ def checkExpr (ctx : Ctx) (e : Expr) (τ : Ty) : Except String JS.Expr :=
         if t ≠ arrowTy ts τ then .error s!"{f} is {tyName t}, and this call needs {tyName (arrowTy ts τ)} [call-type]"  -- check: call-type (load-bearing)
         else .ok (emitCall (.atom (.path f [])) (a :: more))
 
+/-! ## Entries -/
+
+/-- A test no value passes: a string isn't a number. -/
+def never (a : JS.Atom) : JS.Test := .and (.isStr a) (.isInt a)
+
+/-- The test that a value is JSON for a field of type `t`. -/
+def testField (t : Ty) (a : JS.Atom) : JS.Test :=
+  match t with
+  | .int => .isInt a
+  | .str => .isStr a
+  | _ => never a
+
+/-- The test that the parse's argument `j` is JSON for the input type `t`: a record is a plain object
+    with exactly its labels, and each field is tested only once that holds. -/
+def testOf (ctx : Ctx) (t : Ty) : JS.Test :=
+  match t with
+  | .record r => (fieldsOf ctx r).foldl (fun acc p => .and acc (testField p.2 (.path "j" [p.1])))
+      (.isShape (.path "j" []) ((fieldsOf ctx r).map Prod.fst))
+  | t => testField t (.path "j" [])
+
+/-- The input, built from `j` once it passed the test: a record is a fresh object of the declared
+    fields, never `j` itself. -/
+def buildOf (ctx : Ctx) (t : Ty) : JS.Expr :=
+  match t with
+  | .record r => .obj ((fieldsOf ctx r).map fun p => (p.1, .path "j" [p.1]))
+  | _ => .atom (.path "j" [])
+
+/-- `(test ? k(build) : f)`, for the argument `j`. -/
+def parseBody (ctx : Ctx) (t : Ty) : JS.Expr :=
+  .cond (testOf ctx t) (.app (.atom (.path "k" [])) (buildOf ctx t)) (.atom (.path "f" []))
+
+/-- The parse function: `((k) => (f) => (j) => (test ? k(build) : f))(ok)(fail)`. Its body names only
+    its own parameters, so no name in the module can be captured. -/
+def parseFn (ctx : Ctx) (t : Ty) (ok : String) (fail : JS.Atom) : JS.Expr :=
+  .app (.app (.arrow "k" (.arrow "f" (.arrow "j" (parseBody ctx t)))) (.atom (.path ok []))) (.atom fail)
+
+/-- `Int`, `String`, or a record whose fields are those. -/
+def flatInput (ctx : Ctx) : Ty → Bool
+  | .int => true
+  | .str => true
+  | .record r => (fieldsOf ctx r).all fun p => p.2 == .int || p.2 == .str
+  | _ => false
+
+/-- A name a value or an entry may be declared with: both are `const`s in the emitted module. -/
+def declarable (ctx : Ctx) (x : String) : Except String Unit :=
+  if !JS.bindable x then .error s!"{x} is reserved, or a global the emitted code calls [val-ident]"  -- check: val-ident (load-bearing)
+  else if (ctx.vals.find x).isSome then .error s!"{x} is declared twice [val-fresh]"  -- check: val-fresh (load-bearing)
+  else .ok ()
+
 def isBase (a : String) : Bool := a == "Int" || a == "String"
 
 /-- Check one declaration, and give the JavaScript for it, if it is a value. -/
@@ -235,15 +292,38 @@ def checkDecl (ctx : Ctx) : Decl → Except String (Ctx × Option JS.Decl)
         else .ok ({ ctx with types := ctx.types.insert r (.record r), recs := ctx.recs.insert r tfs }, none)
       | .error e => .error e
   | .val x tn e =>
-    if !JS.bindable x then .error s!"{x} is reserved, or a global the emitted code calls [val-ident]"  -- check: val-ident (load-bearing)
-    else if (ctx.vals.find x).isSome then .error s!"{x} is declared twice [val-fresh]"  -- check: val-fresh (load-bearing)
-    else
+    match declarable ctx x with
+    | .error err => .error err
+    | .ok () =>
       match resolve ctx.types tn with
       | .error err => .error err
       | .ok τ =>
         match checkExpr ctx e τ with
         | .ok je => .ok ({ ctx with vals := ctx.vals.insert x τ }, some ⟨x, je, isData τ⟩)
         | .error err => .error s!"{x}: {err}"
+  | .entry x tn ok fail =>
+    match declarable ctx x with
+    | .error err => .error err
+    | .ok () =>
+      if x == "then" then .error "an entry can't be named then: import() would take the module for a promise [entry-then]"  -- check: entry-then (load-bearing)
+      else
+        match resolve ctx.types tn with
+        | .error err => .error err
+        | .ok t =>
+          if !(isFn t && isData (resultTy t)) then .error s!"an entry's type is a function to data, and {tyName t} isn't [entry-type]"  -- check: entry-type (load-bearing)
+          else if !flatInput ctx (paramTy t) then .error s!"an entry's input is Int, String, or a record of those, and {tyName (paramTy t)} isn't [entry-input]"  -- check: entry-input (policy)
+          else
+            match inferAtom ctx (.var ok) with
+            | .error err => .error s!"{x}: {err}"
+            | .ok tok =>
+              if tok ≠ .fn (paramTy t) (resultTy t) then .error s!"{ok} is {tyName tok}, and {x} needs {tyName (.fn (paramTy t) (resultTy t))} [entry-ok-type]"  -- check: entry-ok-type (load-bearing)
+              else
+                match inferAtom ctx fail with
+                | .error err => .error s!"{x}: {err}"
+                | .ok tf =>
+                  if tf ≠ resultTy t then .error s!"{x}'s failure value is {tyName tf}, where {tyName (resultTy t)} is needed [entry-fail-type]"  -- check: entry-fail-type (load-bearing)
+                  else .ok ({ ctx with vals := ctx.vals.insert x (.entry (paramTy t) (resultTy t)) },
+                    some ⟨x, .entry (parseFn ctx (paramTy t) ok (emitAtom fail)), true⟩)
 
 def checkFrom (ctx : Ctx) : Program → Except String (Ctx × JS.Program)
   | [] => .ok (ctx, [])

@@ -46,6 +46,14 @@ against Node.
   each unit as one Lean character, the surrogates, which a Lean character can't be, as characters no
   ASCII label is, and it never looks inside a foreign string.
 * Reading a property of `null` or `undefined` is a TypeError.
+* An entry is the exported function an importer calls with any value. It is printed as
+  `((p) => (input) => p($json(input)))(parse)`, where `$json`, printed once at the top of the module,
+  gives `JSON.parse` of a string inside a `try`, and `undefined` for anything else or for text that
+  doesn't parse. The model evaluates the parse function and holds it (`entryOf`); it doesn't call an
+  entry, since only importers do, and what an entry promises is said by `ValOf` for every value
+  `JSON.parse` returns. That `$json` gives `undefined` or such a value is the trusted step, measured.
+* A module that exports a function named `then` can't be imported with `import()`, which takes the
+  module for a promise and waits on it forever, so the model refuses one.
 * A conditional `(t ? a : b)` evaluates its test, then one branch. A test is
   `typeof a === "string"`; `Number.isSafeInteger(a) && !Object.is(a, -0)`, which holds for a safe
   integer and not for `-0`; a shape test, which holds for a plain object whose own keys are exactly the
@@ -86,6 +94,7 @@ inductive Expr where
   | arrow (param : String) (body : Expr)          -- (param) => body
   | app (f : Expr) (arg : Expr)                   -- f(arg)
   | cond (t : Test) (a b : Expr)                  -- (t ? a : b)
+  | entry (parse : Expr)                          -- an entry around its parse function
   deriving Repr, DecidableEq
 
 /-- `export const name = e;`, or `const name = e;` when it isn't exported. -/
@@ -109,6 +118,7 @@ inductive Val where
   | obj (fields : List (String × Val)) (frozen : Bool)  -- a plain object whose own fields are exactly these, each once
   | untracked                           -- a value the model doesn't track: see `readField`
   | clos (env : List (String × Val)) (param : String) (body : Expr)  -- an arrow function, and the names it sees
+  | entryOf (parse : Val)               -- an entry, holding its parse function
   deriving Repr
 
 /-- What an importer can be handed: numbers, strings, and frozen objects of those, never a function. -/
@@ -116,6 +126,17 @@ inductive Data : Val → Prop where
   | num {n} : Data (.num n)
   | str {s} : Data (.str s)
   | obj {fs} : (∀ l v, lookup fs l = some v → Data v) → Data (.obj fs true)
+
+/-- What an importer can be handed: data, or an entry, which takes any value. -/
+inductive Exportable : Val → Prop where
+  | data {v} : Data v → Exportable v
+  | entry {c} : Exportable (.entryOf c)
+
+/-- A value V8 can call. -/
+def callable : Val → Bool
+  | .clos _ _ _ => true
+  | .entryOf _ => true
+  | _ => false
 
 inductive Err where
   | syntax (msg : String)
@@ -267,6 +288,7 @@ def staticOk : Expr → Bool
   | .arrow x body => validIdent x && staticOk body
   | .app f a => staticOk f && staticOk a
   | .cond t a b => testOk t && staticOk a && staticOk b
+  | .entry p => staticOk p
 
 /-- Evaluate an expression with `n` units of fuel. A call's function, its argument and its body each
     get one unit less, so fuel bounds how deeply evaluation nests. -/
@@ -300,6 +322,15 @@ def evalExpr : Nat → List (String × Val) → Expr → Except Err Val
     | .ok true => evalExpr n env a
     | .ok false => evalExpr n env b
     | .error e => .error e
+  | n + 1, env, .entry p =>
+    match evalExpr n env p with
+    | .ok c => .ok (.entryOf c)
+    | .error e => .error e
+
+/-- Calling a function value with an argument, as an importer calls an entry's parse. -/
+def applyVal (n : Nat) : Val → Val → Except Err Val
+  | .clos cenv x body, w => evalExpr n ((x, w) :: cenv) body
+  | _, _ => .error .notCallable
 
 /-- Run the module from an environment of names already declared, with `n` units of fuel per line. -/
 def runFrom (n : Nat) (env : List (String × Val)) : Program → Except Err (List (String × Val))
@@ -310,7 +341,9 @@ def runFrom (n : Nat) (env : List (String × Val)) : Program → Except Err (Lis
     else if (lookup env d.name).isSome then .error (.syntax s!"{d.name} is declared twice")
     else
       match evalExpr n env d.e with
-      | .ok v => runFrom n ((d.name, v) :: env) ds
+      | .ok v =>
+        if d.exported && d.name == "then" && callable v then .error (.unmodeled "an exported function named then: import() would wait on the module forever")
+        else runFrom n ((d.name, v) :: env) ds
       | .error e => .error e
 
 def run (n : Nat) (p : Program) : Except Err (List (String × Val)) := runFrom n [] p
@@ -355,10 +388,21 @@ def renderExpr : Expr → String
       | _ => renderExpr a) ++ " : " ++ (match b with
       | .arrow _ _ => "(" ++ renderExpr b ++ ")"
       | _ => renderExpr b) ++ ")"
+  | .entry p => "((p) => (input) => p($json(input)))(" ++ renderExpr p ++ ")"
+
+def isEntry : Expr → Bool
+  | .entry _ => true
+  | _ => false
+
+/-- `JSON.parse` of a string, and `undefined` for anything else or for text that doesn't parse: the
+    entries' boundary, printed once at the top of a module that has any. -/
+def jsonHelper : String :=
+  "const $json = (s) => { if (typeof s !== \"string\") return undefined; try { return JSON.parse(s); } catch { return undefined; } };\n"
 
 /-- The text of the module. -/
 def render (p : Program) : String :=
-  joinR (p.map fun d => s!"{if d.exported then "export " else ""}const {d.name} = {renderExpr d.e};\n")
+  (if p.any (fun d => isEntry d.e) then jsonHelper else "") ++
+    joinR (p.map fun d => s!"{if d.exported then "export " else ""}const {d.name} = {renderExpr d.e};\n")
 
 /-! ## Fuel: any result other than running out stays the same with more fuel -/
 
@@ -382,6 +426,15 @@ theorem evalExpr_mono : ∀ (n : Nat) {env e r}, evalExpr n env e = r → r ≠ 
         cases b' with
         | true => simp only [ht] at h ⊢; exact ih h hr m (by omega)
         | false => simp only [ht] at h ⊢; exact ih h hr m (by omega)
+    | entry p =>
+      simp only [evalExpr] at h ⊢
+      cases hp : evalExpr n env p with
+      | error e =>
+        simp only [hp] at h
+        rw [ih hp (by rw [h]; exact hr) m (by omega)]; exact h
+      | ok c =>
+        simp only [hp] at h
+        rw [ih hp (by simp) m (by omega)]; exact h
     | app f a =>
       simp only [evalExpr] at h ⊢
       cases hf : evalExpr n env f with
@@ -423,10 +476,19 @@ theorem runFrom_mono : ∀ (ds : Program) {n env r}, runFrom n env ds = r → r 
           split at h
           · rename_i v he
             rw [evalExpr_mono n he (by simp) m hm]
-            exact ih h hr m hm
+            dsimp only
+            split at h
+            · rename_i hc; rw [if_pos hc]; exact h
+            · rename_i hc; rw [if_neg hc]; exact ih h hr m hm
           · rename_i e he
             rw [evalExpr_mono n he (fun hx => hr (by rw [← h]; injection hx with hx; rw [hx])) m hm]
             exact h
+
+theorem applyVal_mono {n c j r} (h : applyVal n c j = r) (hr : r ≠ .error .outOfFuel) (m : Nat) (hm : n ≤ m) :
+    applyVal m c j = r := by
+  cases c
+  case clos cenv x body => simp only [applyVal] at h ⊢; exact evalExpr_mono n h hr m hm
+  all_goals (simp only [applyVal] at h ⊢; exact h)
 
 /-- A run never changes a name already declared: declaring it again is an error. -/
 theorem runFrom_keeps : ∀ (ds : Program) {n env env' x v}, runFrom n env ds = .ok env' →
@@ -446,9 +508,11 @@ theorem runFrom_keeps : ∀ (ds : Program) {n env env' x v}, runFrom n env ds = 
         · rename_i hfresh
           split at h
           · rename_i w _
-            apply ih h
-            have hne : d.name ≠ x := fun e => by subst e; simp [hx] at hfresh
-            simp [lookup, hne, hx]
+            split at h
+            · cases h
+            · apply ih h
+              have hne : d.name ≠ x := fun e => by subst e; simp [hx] at hfresh
+              simp [lookup, hne, hx]
           · cases h
 
 theorem run_mono {n p r} (h : run n p = r) (hr : r ≠ .error .outOfFuel) : ∀ m, n ≤ m → run m p = r :=

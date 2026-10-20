@@ -3,7 +3,8 @@
 // plain object with exactly the record's fields, each of its declared type. And every value must be the one
 // written: a literal, a name's value, a field read's result, or, for an update, a new object holding
 // the new values and the old record's other fields. A call's result is checked for its type only. A
-// function must not be exported, and the module exports nothing but the data the source declares.
+// function must not be exported, an entry must be exported as a function (test/entry.mjs calls them),
+// and the module exports nothing but the data and the entries the source declares.
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 
@@ -11,7 +12,7 @@ const [source, compiled] = process.argv.slice(2);
 const m = await import(resolve(compiled));
 const types = new Map([['Int', { kind: 'Int' }], ['String', { kind: 'String' }]]);
 const typeOf = (text) => (text.includes('->') ? { kind: 'fn' } : types.get(text.trim()));
-const dataNames = new Set();
+const exportNames = new Set();
 const recs = new Map();
 const fieldsOf = (text) => [...text.matchAll(/(\w+)\s*:\s*("[^"]*"|-?\d+|\w+)/g)].map((f) => [f[1], f[2]]);
 let failed = 0;
@@ -33,13 +34,16 @@ for (const line of readFileSync(source, 'utf8').split('\n')) {
   if ((d = /^type (\w+) = \{(.*)\}$/.exec(line))) {
     recs.set(d[1], fieldsOf(d[2]).map(([l, t]) => [l, types.get(t)]));
     types.set(d[1], { kind: 'record', name: d[1] });
+  } else if ((d = /^entry (\w+): /.exec(line))) {
+    exportNames.add(d[1]);
+    if (typeof m[d[1]] !== 'function') fail(`${d[1]}: an entry, and not exported as a function`);
   } else if ((d = /^type (\w+) = (.+)$/.exec(line))) {
     types.set(d[1], typeOf(d[2]));
   } else if ((d = /^(\w+): (.+?) = (.*)$/.exec(line))) {
     const [, name, tyName, e] = d;
     const t = typeOf(tyName);
     if (t.kind === 'fn') { if (name in m) fail(`${name}: a function is exported`); continue; }
-    dataNames.add(name);
+    exportNames.add(name);
     const v = m[name];
     if (!hasType(v, t)) { fail(`${name}: declared ${tyName}, holds ${JSON.stringify(v)}`); continue; }
     let u;
@@ -63,5 +67,5 @@ for (const line of readFileSync(source, 'utf8').split('\n')) {
     }
   }
 }
-for (const name of Object.keys(m)) if (!dataNames.has(name)) fail(`${name}: exported, and not declared as data`);
+for (const name of Object.keys(m)) if (!exportNames.has(name)) fail(`${name}: exported, and not declared as data or as an entry`);
 process.exit(failed ? 1 : 0);

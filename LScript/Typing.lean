@@ -25,13 +25,16 @@ inductive DataOf (recs : Recs) : JS.Val → Ty → Prop where
 
 /-- A JavaScript value has an LScript type. Data is `DataOf`. A function is a closure that, given any
     value of its parameter type, finishes at some fuel with a value of its result type: it neither
-    throws nor runs forever. -/
+    throws nor runs forever. An entry holds a parse function that, given anything `JSON.parse` returns,
+    or `undefined`, finishes with data of the entry's result type. -/
 def ValOf (recs : Recs) : JS.Val → Ty → Prop
   | v, .int => DataOf recs v .int
   | v, .str => DataOf recs v .str
   | v, .record r => DataOf recs v (.record r)
   | v, .fn a b => ∃ cenv x body, v = .clos cenv x body ∧
       ∀ w, ValOf recs w a → ∃ n r, JS.evalExpr n ((x, w) :: cenv) body = .ok r ∧ ValOf recs r b
+  | v, .entry _ b => ∃ c, v = .entryOf c ∧
+      ∀ j, (JS.IsJson j ∨ j = .undef) → ∃ n r, JS.applyVal n c j = .ok r ∧ ValOf recs r b ∧ JS.Data r
 
 /-! ## Association lists -/
 
@@ -95,6 +98,7 @@ theorem DataOf.valOf {recs v t} (h : DataOf recs v t) : ValOf recs v t := by
   | str => exact h
   | record r => exact h
   | fn a b => cases h
+  | entry a b => cases h
 
 theorem ValOf.dataOf {recs v t} (hd : isData t = true) (h : ValOf recs v t) : DataOf recs v t := by
   cases t with
@@ -102,5 +106,6 @@ theorem ValOf.dataOf {recs v t} (hd : isData t = true) (h : ValOf recs v t) : Da
   | str => exact h
   | record r => exact h
   | fn a b => simp [isData] at hd
+  | entry a b => simp [isData] at hd
 
 end LScript

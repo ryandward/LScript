@@ -1,0 +1,12 @@
+const $json = (s) => { if (typeof s !== "string") return undefined; try { return JSON.parse(s); } catch { return undefined; } };
+const nameOf = (u) => u.name;
+export const greet = ((p) => (input) => p($json(input)))(((k) => (f) => (j) => ((((typeof j === "object" && j !== null && !Array.isArray(j) && Object.keys(j).length === 2 && Object.hasOwn(j, "name") && Object.hasOwn(j, "age")) && (typeof j.name === "string")) && (Number.isSafeInteger(j.age) && !Object.is(j.age, -0))) ? k(Object.freeze({ name: j.name, age: j.age })) : f))(nameOf)("not a user"));
+const id = (u) => u;
+export const nobody = Object.freeze({ name: "nobody", age: 0 });
+export const echo = ((p) => (input) => p($json(input)))(((k) => (f) => (j) => ((((typeof j === "object" && j !== null && !Array.isArray(j) && Object.keys(j).length === 2 && Object.hasOwn(j, "name") && Object.hasOwn(j, "age")) && (typeof j.name === "string")) && (Number.isSafeInteger(j.age) && !Object.is(j.age, -0))) ? k(Object.freeze({ name: j.name, age: j.age })) : f))(id)(nobody));
+const ageOf = (u) => u.age;
+export const age = ((p) => (input) => p($json(input)))(((k) => (f) => (j) => ((((typeof j === "object" && j !== null && !Array.isArray(j) && Object.keys(j).length === 2 && Object.hasOwn(j, "name") && Object.hasOwn(j, "age")) && (typeof j.name === "string")) && (Number.isSafeInteger(j.age) && !Object.is(j.age, -0))) ? k(Object.freeze({ name: j.name, age: j.age })) : f))(ageOf)(-1));
+const same = (n) => n;
+export const number = ((p) => (input) => p($json(input)))(((k) => (f) => (j) => ((Number.isSafeInteger(j) && !Object.is(j, -0)) ? k(j) : f))(same)(0));
+const quote = (s) => s;
+export const text = ((p) => (input) => p($json(input)))(((k) => (f) => (j) => ((typeof j === "string") ? k(j) : f))(quote)(""));

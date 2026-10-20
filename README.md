@@ -32,8 +32,12 @@ What is trusted rather than proved:
   functions, unless the run is checked with `certify/check.sh` (below);
 - the model of the emitted JavaScript, LScript/JS.lean, which `test/v8.mjs` checks against Node;
 - the printer, `JS.render`, which `test/run.sh` checks by running every accepted program;
-- the built-ins the emitted code calls, so far only `Object.freeze`. Code that runs before the module
-  could replace one, and the module trusts that none did;
+- the built-ins the emitted code calls: `Object.freeze`, and for entries `JSON.parse`, `Array.isArray`,
+  `Object.keys`, `Object.hasOwn`, `Number.isSafeInteger` and `Object.is`. Code that runs before the
+  module could replace one, and the module trusts that none did;
+- for an entry, that the printed helper `$json` gives `JSON.parse` of a string, or `undefined`, and
+  never runs the caller's code: `test/v8.mjs` measures it on text, non-text, a hostile Proxy and
+  nesting a million deep;
 - V8's stack, which the model leaves unbounded: calls nested deeper than it allows throw a RangeError,
   which on Node 22 takes about 10,000 declarations.
 
@@ -105,6 +109,37 @@ relation, the standard way to prove that calls finish: a call needs no argument 
 the proof for a function is the proof for its body. The model of V8 grew closures, calls and fuel
 first, and `test/v8.mjs` measures each claim, including the SyntaxError V8 raises for a function body
 that isn't valid syntax even when nothing calls it.
+
+## Slice 3b: entries
+
+An entry is how data comes in: an exported function an importer calls with anything. Text that
+`JSON.parse` reads as a value of the entry's input type is parsed into a fresh frozen value and handed
+to the entry's success function; anything else gets its failure value.
+
+```
+type User = { name: String, age: Int }
+nameOf: User -> String = (u) => u.name
+entry greet: User -> String = nameOf else "not a user"
+```
+
+```js
+const $json = (s) => { if (typeof s !== "string") return undefined; try { return JSON.parse(s); } catch { return undefined; } };
+const nameOf = (u) => u.name;
+export const greet = ((p) => (input) => p($json(input)))(((k) => (f) => (j) =>
+  (<j is a plain object with exactly name and age, a string and a safe integer> ? k(Object.freeze({ name: j.name, age: j.age })) : f))(nameOf)("not a user"));
+```
+
+The parse never reads a field before the shape test has found it, never hands on the parsed object,
+and never invents a value for a missing field. It refuses an extra key, `__proto__` included, since a
+sender and a receiver that disagree about a record should hear about it; it refuses `-0`, which an
+`Int` can't be; and of two equal keys it takes the last, as `JSON.parse` does. An entry's input is
+`Int`, `String`, or a record of those, for now. Its name can't be `then`, since `import()` would take
+the module for a promise and wait forever.
+
+`compile_sound` needs no new part for entries: an entry's type says that its parse, given anything
+`JSON.parse` returns or `undefined`, finishes with data of its result type, so "every name holds a
+value of its type" covers it. The parse is proved through the model of V8, test by test; what is
+trusted is `$json` and the built-ins the tests call, each measured.
 
 ## Checking a run
 
