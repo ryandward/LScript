@@ -8,8 +8,6 @@
 set -u
 cd "$(dirname "$0")/.."
 LAKE=${LAKE:-lake}
-# The tests check the working tree, which may have uncommitted changes.
-export LSCRIPT_ALLOW_DIRTY=1
 "$LAKE" build >/dev/null || { echo "build failed"; exit 2; }
 bin=.lake/build/bin/lscript
 fail=0

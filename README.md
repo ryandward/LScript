@@ -81,23 +81,19 @@ beside the path it was given, as the compiler writes it, so a symlinked `F.ls` i
 output beside the link. Nothing needs keeping but the two files, and any pair can be checked at any
 time.
 
-The check is against a commit, and it prints which one. It refuses a checkout with uncommitted
-changes to tracked files, unless `LSCRIPT_ALLOW_DIRTY=1`, and then it says so. It rebuilds the LScript
-library from the checkout's sources first, so an older build left in `.lake` isn't what gets checked.
-`certify/check.sh --fresh F.ls` goes further: it builds the commit from a clean export, ignoring the
-checkout's build directory, so it doesn't rely on Lake's records of what is up to date. It takes as
-long as a full build.
+It rebuilds the LScript library from the checkout's sources first, so an older build left in `.lake`
+isn't what gets checked, and it prints the commit it checked against, noting uncommitted changes.
 
 A checked run doesn't rest on the parser, the `lscript` binary, or the C toolchain that built it. It
-still rests on:
+rests on the printer and the model of V8 together, since `compile_sound` is about the program the
+printer prints and the step from that text to what V8 does is the model's; on `Object.freeze` being
+the built-in, and Node behaving as `test/v8.mjs` measures; and on the machine it runs on: Lean's
+kernel, Lake's build of the commit, and the files as they were on disk when it ran.
 
-- Lean's kernel, and the few lines in `certify/Check.lean` that read the two files;
-- the commit it prints, as built: from its sources by Lake, or from a clean export with `--fresh`;
-- the printer and the model of V8 together, since `compile_sound` is about the program the printer
-  prints, and the step from that text to what V8 does is the model's;
-- `Object.freeze` being the built-in, and Node behaving as `test/v8.mjs` measures.
-
-It is about the bytes on disk when it ran: a file changed afterwards is a different file.
+A check is evidence for whoever runs it. The project's job is soundness, not making compiled code
+tamper-proof: someone who wants assurance about a program, an auditor for instance, runs
+`certify/check.sh` themselves on a fresh clone of the commit they reviewed. A result someone else
+reports is only as good as their word.
 
 ## Checks
 
@@ -145,7 +141,6 @@ Lean 4.22.0 (`lean-toolchain`), no Mathlib.
 lake build                    # the compiler, and every proof
 .lake/build/bin/lscript F.ls  # writes F.mjs, or says why F.ls is rejected
 certify/check.sh F.ls         # Lean's kernel checks that run, from F.ls and F.mjs on disk
-certify/check.sh --fresh F.ls # the same, against a clean build of the commit
 test/run.sh                   # accepted and rejected programs, run in Node and checked, and the model against V8
 node test/checks.mjs          # every check against its kind: fired by a test, and refuting soundness when removed
 ```
