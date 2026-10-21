@@ -52,7 +52,7 @@ example : JS.renderExpr (.cond (.isStr (.path "v" [])) (.arrow "x" (.atom (.path
 
 /-- The boundary helper and an entry's glue, as printed; `test/v8.mjs` measures both. -/
 example : JS.jsonHelper =
-    "const $json = (s) => { if (typeof s !== \"string\") return undefined; try { return JSON.parse(s); } catch { return undefined; } };\n" := rfl
+    "const $json = (s) => { if (typeof s !== \"string\") return void 0; try { return JSON.parse(s); } catch { return void 0; } };\n" := rfl
 example : JS.renderExpr (.entry (.arrow "j" (.atom (.path "j" [])))) = "((p) => (input) => p($json(input)))((j) => j)" := rfl
 
 /-- The real checker rejects every counterexample, so none of them is wrong here. -/

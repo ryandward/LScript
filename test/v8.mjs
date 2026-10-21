@@ -149,7 +149,7 @@ expect('an arrow called where it is written', await moduleValue('export const r 
 
 // Entries: the boundary helper and the glue around a parse, as Examples.lean pins them. The parse here
 // returns what it is handed, so this measures what an entry hands its parse.
-const helper = 'const $json = (s) => { if (typeof s !== "string") return undefined; try { return JSON.parse(s); } catch { return undefined; } };';
+const helper = 'const $json = (s) => { if (typeof s !== "string") return void 0; try { return JSON.parse(s); } catch { return void 0; } };';
 const glueLib = join(dir, 'glue.mjs');
 writeFileSync(glueLib, `${helper}\nexport const seen = ((p) => (input) => p($json(input)))((j) => j);\n`);
 const { seen } = await import(glueLib);
@@ -167,6 +167,12 @@ const settles = async (source) => {
 };
 expect('import() of a module exporting a function named then (the model refuses it)', await settles(`${helper}\nexport const then = ((p) => (input) => p($json(input)))((j) => 0);\n`), 'still waiting');
 expect('...and of one exporting the number then', await settles('export const then = 1;\n'), 'resolved');
+// A module binding a global the emitted code reads shadows it for the whole module (the model refuses them).
+const load = async (decl) => { const f = join(dir, `m${n++}.mjs`); writeFileSync(f, `${helper}\n${decl}\nexport const isInt = (v) => ${isInt};\nexport const isShape = (v) => ${isShape};\nexport const seen = ((p) => (input) => p($json(input)))((j) => j);\n`); return import(f); };
+expect('a module binding Number, then the integer test', await (async () => { const m = await load('const Number = 5;'); return run(() => m.isInt(7)); })(), 'TypeError');
+expect('a module binding Array, then the shape test', await (async () => { const m = await load('const Array = 1;'); return run(() => m.isShape({ name: 'a', age: 1 })); })(), 'TypeError');
+expect('a module binding JSON, then the boundary on valid text', await (async () => { const m = await load('const JSON = 1;'); return run(() => m.seen('7')); })(), 'undefined');
+expect('a module binding undefined leaves the boundary alone (void 0)', await (async () => { const m = await load('const undefined = 5;'); return run(() => m.seen(42)); })(), 'undefined');
 
 console.log(failed ? `${failed} disagreement(s) with the model` : 'the model agrees with Node');
 process.exit(failed ? 1 : 0);

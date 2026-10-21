@@ -28,8 +28,11 @@ against Node.
   module it runs without an error, it agrees with V8.
 * Every object the module makes is frozen: it is printed as `Object.freeze({ … })`. Writing, adding,
   deleting or redefining a field of it, or changing its prototype, then throws, so code that imports a
-  record can't change what it holds. This rests on `Object.freeze` being the built-in; a module that
-  binds the name `Object` would shadow it, so the model refuses that name.
+  record can't change what it holds. This rests on `Object.freeze` being the built-in.
+* The emitted code reads the globals `Object`, `Array`, `Number` and `JSON` (`emittedGlobals`). A
+  module that binds one of those names shadows it for the whole module, so the model refuses them as
+  names and as parameters. `test/globals.mjs` checks that the printed modules read no other global;
+  where the code needs `undefined`, it writes `void 0`, which no binding can shadow.
 * An arrow function `(x) => body` is a closure. Calling it runs its body with `x` bound to the argument
   and the names declared before the arrow; in V8 the body can also see names declared after it, once
   they are initialized, so the model is stricter. Calling anything else is a TypeError, or, for a
@@ -191,8 +194,8 @@ theorem validIdent_eq (s : String) : validIdent s = (identShape s && !reservedWo
   simp only [validIdent, reserved, Scope.find_foldl, Scope.find_empty]
   cases reservedWords.contains s <;> rfl
 
-/-- Globals the emitted code calls. A module binding one of these names would shadow it. -/
-def emittedGlobals : List String := ["Object"]
+/-- Globals the emitted code reads. A module binding one of these names would shadow it. -/
+def emittedGlobals : List String := ["Object", "Array", "Number", "JSON"]
 
 /-- A name a declaration may bind: a valid identifier, not a global the emitted code calls. -/
 def bindable (s : String) : Bool := validIdent s && !emittedGlobals.contains s
@@ -397,7 +400,7 @@ def isEntry : Expr → Bool
 /-- `JSON.parse` of a string, and `undefined` for anything else or for text that doesn't parse: the
     entries' boundary, printed once at the top of a module that has any. -/
 def jsonHelper : String :=
-  "const $json = (s) => { if (typeof s !== \"string\") return undefined; try { return JSON.parse(s); } catch { return undefined; } };\n"
+  "const $json = (s) => { if (typeof s !== \"string\") return void 0; try { return JSON.parse(s); } catch { return void 0; } };\n"
 
 /-- The text of the module. -/
 def render (p : Program) : String :=

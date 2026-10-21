@@ -1,4 +1,4 @@
-const $json = (s) => { if (typeof s !== "string") return undefined; try { return JSON.parse(s); } catch { return undefined; } };
+const $json = (s) => { if (typeof s !== "string") return void 0; try { return JSON.parse(s); } catch { return void 0; } };
 const nameOf = (u) => u.name;
 export const greet = ((p) => (input) => p($json(input)))(((k) => (f) => (j) => ((((typeof j === "object" && j !== null && !Array.isArray(j) && Object.keys(j).length === 2 && Object.hasOwn(j, "name") && Object.hasOwn(j, "age")) && (typeof j.name === "string")) && (Number.isSafeInteger(j.age) && !Object.is(j.age, -0))) ? k(Object.freeze({ name: j.name, age: j.age })) : f))(nameOf)("not a user"));
 const id = (u) => u;

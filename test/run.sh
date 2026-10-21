@@ -4,8 +4,8 @@
 # disk; the check refuses a compiled file with a line appended, a source with a byte changed, and a
 # symlinked source whose output beside the link differs from the one beside its target; every
 # program in reject/ is refused for the reason its first line names; test/entry.mjs calls the entries
-# of test/accept/entry.mjs with good, bad and hostile input; and the JavaScript model agrees
-# with Node.
+# of test/accept/entry.mjs with good, bad and hostile input; the JavaScript model agrees with
+# Node; and the printed code reads no global but the ones the model protects.
 set -u
 cd "$(dirname "$0")/.."
 LAKE=${LAKE:-lake}
@@ -39,5 +39,6 @@ for f in test/reject/*.ls; do
   echo "ok   $f: $want"
 done
 node test/v8.mjs >/dev/null || { echo "the JavaScript model disagrees with Node: run node test/v8.mjs"; fail=1; }
+node test/globals.mjs >/dev/null || { echo "the printed code reads a global the model doesn't protect: run node test/globals.mjs"; fail=1; }
 [ $fail = 0 ] && echo "all passed"
 exit $fail

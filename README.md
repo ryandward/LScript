@@ -34,7 +34,9 @@ What is trusted rather than proved:
 - the printer, `JS.render`, which `test/run.sh` checks by running every accepted program;
 - the built-ins the emitted code calls: `Object.freeze`, and for entries `JSON.parse`, `Array.isArray`,
   `Object.keys`, `Object.hasOwn`, `Number.isSafeInteger` and `Object.is`. Code that runs before the
-  module could replace one, and the module trusts that none did;
+  module could replace one, and the module trusts that none did. The module itself can't shadow one:
+  the names `Object`, `Array`, `Number` and `JSON` are refused, and `test/globals.mjs` checks that the
+  printed code reads no other global;
 - for an entry, that the printed helper `$json` gives `JSON.parse` of a string, or `undefined`, and
   never runs the caller's code: `test/v8.mjs` measures it on text, non-text, a hostile Proxy and
   nesting a million deep;
