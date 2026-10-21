@@ -55,6 +55,25 @@ example : JS.jsonHelper =
     "const $json = (s) => { if (typeof s !== \"string\") return void 0; try { return JSON.parse(s); } catch { return void 0; } };\n" := rfl
 example : JS.renderExpr (.entry (.arrow "j" (.atom (.path "j" [])))) = "((p) => (input) => p($json(input)))((j) => j)" := rfl
 
+/-- Four modules on which `test/diff.mjs` found the model saying a value where V8 refuses the module or
+    never finishes importing it. V8 parses the whole module first, so a string it can't read in a
+    branch never taken is a SyntaxError; reading `caller` of an arrow function throws; and an exported
+    `then` holding an inherited method makes `import()` wait forever. The model refuses all three. -/
+def errorOf (r : Except JS.Err (List (String × JS.Val))) : String :=
+  match r with
+  | .error (.syntax _) => "syntax"
+  | .error (.unmodeled _) => "unmodeled"
+  | _ => "other"
+
+example : errorOf (JS.run 5 [⟨"a", .cond (.isStr (.num 1)) (.atom (.str "\"")) (.atom (.num 0)), true⟩]) = "syntax" := by decide
+example : errorOf (JS.run 5 [⟨"f", .arrow "x" (.atom (.path "x" [])), false⟩,
+    ⟨"c", .atom (.path "f" ["caller"]), true⟩]) = "unmodeled" := by decide
+example : errorOf (JS.run 5 [⟨"o", .obj [], false⟩, ⟨"then", .atom (.path "o" ["toString"]), true⟩]) = "unmodeled" := by decide
+
+/-- The fourth: an entry below the top of a line still gets the helper it calls. -/
+example : JS.render [⟨"e", .cond (.isStr (.num 1)) (.atom (.num 0)) (.entry (.arrow "j" (.atom (.path "j" [])))), true⟩] =
+    JS.jsonHelper ++ "export const e = ((typeof 1 === \"string\") ? 0 : ((p) => (input) => p($json(input)))((j) => j));\n" := rfl
+
 /-- The real checker rejects every counterexample, so none of them is wrong here. -/
 example : counterexamples.all (fun e => (compile e.2).toOption.isNone && !wrong e.2) = true := by decide
 

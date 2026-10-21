@@ -233,7 +233,7 @@ theorem fieldPath_shape {ctx : Ctx} (hd : DeclsOk ctx) : ∀ (ls : List String) 
 
 /-! ## What the checker emits is valid syntax
 
-V8 parses a function's body before running anything, so the model needs every body valid. -/
+V8 parses the whole module before it runs any of it, so the model needs every line valid. -/
 
 theorem inferAtom_static {ctx a t} (hd : DeclsOk ctx) (h : inferAtom ctx a = .ok t) :
     JS.atomOk (emitAtom a) = true := by
@@ -439,10 +439,8 @@ theorem inferAtom_sound {ctx env a t} (h : inferAtom ctx a = .ok t) (ha : Agrees
     simp only [inferAtom] at h
     split at h
     · cases h
-    · rename_i hs'
-      cases h
-      have hs : JS.validStr s = true := by simpa using hs'
-      exact ⟨.str s, by simp [emitAtom, JS.evalAtom, hs], DataOf.str.valOf⟩
+    · cases h
+      exact ⟨.str s, by simp [emitAtom, JS.evalAtom], DataOf.str.valOf⟩
   | var x =>
     simp only [inferAtom] at h
     cases hx : ctx.vals.find x with
@@ -506,9 +504,9 @@ theorem evalFields_ok {env : List (String × JS.Val)} {Q : String → JS.Val →
     · simp only [e, if_false] at hl; exact hq l v hl
 
 theorem evalExpr_obj {n} {env : List (String × JS.Val)} {fs : List (String × JS.Atom)} {vs}
-    (hv : (fs.map Prod.fst).all JS.validLabel = true) (hn : (fs.map Prod.fst).Nodup)
-    (he : JS.evalFields env fs = .ok vs) : JS.evalExpr (n + 1) env (.obj fs) = .ok (.obj vs true) := by
-  simp [JS.evalExpr, hv, hn, he]
+    (hn : (fs.map Prod.fst).Nodup) (he : JS.evalFields env fs = .ok vs) :
+    JS.evalExpr (n + 1) env (.obj fs) = .ok (.obj vs true) := by
+  simp [JS.evalExpr, hn, he]
 
 /-- Applying a function value to arguments the checker typed, one at a time, gives a value of the type
     left after them, given enough fuel for every body. -/
@@ -581,8 +579,7 @@ theorem checkExpr_sound : ∀ (e : Expr) {ctx env τ je}, checkExpr ctx e τ = .
           cases h; subst e
           obtain ⟨v, hv, hvt⟩ := ha.2 x t hx
           obtain ⟨w, hw, hwt⟩ := fieldPath_sound ls hp hvt
-          have hls := fieldPath_shape hd ls hp
-          exact ⟨1, w, by simp [JS.evalExpr, JS.evalAtom, hls, hv, hw], hwt⟩
+          exact ⟨1, w, by simp [JS.evalExpr, JS.evalAtom, hv, hw], hwt⟩
   | record fs =>
     intro ctx env τ je h ha hd hτ
     simp only [checkExpr] at h
@@ -638,9 +635,8 @@ theorem checkExpr_sound : ∀ (e : Expr) {ctx env τ je}, checkExpr ctx e τ = .
                 obtain ⟨v, hv, hvt⟩ := inferAtom_sound hi ha
                 exact ⟨v, hv, τ', hτ', hvt⟩)
             refine ⟨1, .obj vs true, ?_, (DataOf.obj hr (fun l => ?_) (fun l v τ' hv hτ' => ?_)).valOf⟩
-            · have hv' : (efs.map Prod.fst).all JS.validLabel = true := by rw [hkeys₁]; exact hvalid
-              have hn' : (efs.map Prod.fst).Nodup := by rw [hkeys₁]; exact hnd
-              exact evalExpr_obj hv' hn' hvs
+            · have hn' : (efs.map Prod.fst).Nodup := by rw [hkeys₁]; exact hnd
+              exact evalExpr_obj hn' hvs
             · rw [lookup_isSome_keys (hkeys.trans hkeys₁)]
               cases hfl : lookup fs l with
               | some a =>
@@ -719,19 +715,16 @@ theorem checkExpr_sound : ∀ (e : Expr) {ctx env τ je}, checkExpr ctx e τ = .
                       | none => rw [hxl] at hs; cases hs
                       | some w =>
                         refine ⟨w, ?_, τl, hτl, (hp l' w τl hxl hτl).valOf⟩
-                        have hshape := label_shape (List.all_eq_true.mp htvalid l' (lookup_key hτl))
-                        simp [JS.evalAtom, hshape, hvx, JS.readPath, JS.readField, hxl])
+                        simp [JS.evalAtom, hvx, JS.readPath, JS.readField, hxl])
                 refine ⟨1, .obj vs true, ?_, (DataOf.obj hr (fun l => ?_) (fun l v τ' hv hτ' => ?_)).valOf⟩
-                · have hv' : (efs.map Prod.fst).all JS.validLabel = true := by rw [hkeys₁]; exact htvalid
-                  have hn' : (efs.map Prod.fst).Nodup := by rw [hkeys₁]; exact htnodup
-                  exact evalExpr_obj hv' hn' hvs
+                · have hn' : (efs.map Prod.fst).Nodup := by rw [hkeys₁]; exact htnodup
+                  exact evalExpr_obj hn' hvs
                 · exact lookup_isSome_keys (hkeys.trans hkeys₁)
                 · obtain ⟨τ'', h₁, h₂⟩ := hq l v hv
                   rw [hτ'] at h₁; cases h₁
                   exact h₂.dataOf (hd.data r tfs hr l _ hτ')
   | lam x body ih =>
     intro ctx env τ je h ha hd hτ
-    have hstatic := checkExpr_static (.lam x body) h hd hτ
     simp only [checkExpr] at h
     split at h
     · cases h
@@ -750,9 +743,8 @@ theorem checkExpr_sound : ∀ (e : Expr) {ctx env τ je}, checkExpr ctx e τ = .
           cases τ with
           | fn a b =>
             simp only [TyOk] at hτ
-            simp only [JS.staticOk, hident, Bool.true_and] at hstatic
             refine ⟨1, .clos env x jb, ?_, ?_⟩
-            · simp only [JS.evalExpr, hident, hglobal, hstatic, Bool.not_true, Bool.false_eq_true, if_false]
+            · simp only [JS.evalExpr, hglobal, Bool.false_eq_true, if_false]
             · simp only [ValOf]
               refine ⟨env, x, jb, rfl, fun w hw => ?_⟩
               obtain ⟨n, r, h₁, h₂⟩ := ih hc (agrees_cons ha hw) (hd.param hident hτ.1) hτ.2
@@ -885,11 +877,11 @@ theorem fieldsOf_label {ctx : Ctx} (hd : DeclsOk ctx) {r p} (hp : p ∈ fieldsOf
 
 /-- Reading a field the shape test found gives the object's own value. -/
 theorem read_found {env jv fs fr l v} (hj : lookup env "j" = some jv) (hjv : jv = .obj fs fr)
-    (hl : JS.identShape l = true) (hv : lookup fs l = some v) : JS.evalAtom env (.path "j" [l]) = .ok v := by
+    (hv : lookup fs l = some v) : JS.evalAtom env (.path "j" [l]) = .ok v := by
   subst hjv
-  simp [JS.evalAtom, hl, hj, JS.readPath, JS.readField, hv]
+  simp [JS.evalAtom, hj, JS.readPath, JS.readField, hv]
 
-theorem testOf_total {ctx : Ctx} {env jv} (hd : DeclsOk ctx) (t : Ty) (hj : lookup env "j" = some jv)
+theorem testOf_total {ctx : Ctx} {env jv} (t : Ty) (hj : lookup env "j" = some jv)
     (hjv : JS.IsJson jv ∨ jv = .undef) : ∃ b, JS.evalTest env (testOf ctx t) = .ok b := by
   have hroot : JS.evalAtom env (.path "j" []) = .ok jv := by simp [JS.evalAtom, hj, JS.readPath]
   have hne : jv ≠ .untracked := by
@@ -920,7 +912,7 @@ theorem testOf_total {ctx : Ctx} {env jv} (hd : DeclsOk ctx) (t : Ty) (hj : look
           cases hl : lookup fs p.1 with
           | none => rw [hl] at hfound; cases hfound
           | some v =>
-            have hread := read_found hj rfl (label_shape (fieldsOf_label hd hp)) hl
+            have hread := read_found hj rfl hl
             have hvj : JS.IsJson v := by
               rcases hjv with hjson | hjson
               · cases hjson with
@@ -960,7 +952,7 @@ theorem testOf_true {ctx : Ctx} {env jv} (hd : DeclsOk ctx) (t : Ty) (ht : TyOk 
         cases hl : lookup fs l with
         | none => rw [hl] at hfound; cases hfound
         | some v =>
-          have hread := read_found hj rfl (label_shape (List.all_eq_true.mp htvalid l (List.mem_map.mpr ⟨(l, τl), hm, rfl⟩))) hl
+          have hread := read_found hj rfl hl
           exact ⟨v, hread, testField_true τl hread (hfields (l, τl) hm)⟩
       let efs := tfs.map fun (p : String × Ty) => (p.1, JS.Atom.path "j" [p.1])
       have hkeys₁ : efs.map Prod.fst = tfs.map Prod.fst := by simp [efs]
@@ -973,10 +965,9 @@ theorem testOf_true {ctx : Ctx} {env jv} (hd : DeclsOk ctx) (t : Ty) (ht : TyOk 
           obtain ⟨v, hv, hvt⟩ := hfield l' τl hm'
           exact ⟨v, hv, τl, lookup_of_mem htnodup hm', hvt⟩)
       refine ⟨.obj vs true, ?_, DataOf.obj hr (fun l => ?_) (fun l v τ' hv hτ' => ?_)⟩
-      · have hv' : (efs.map Prod.fst).all JS.validLabel = true := by rw [hkeys₁]; exact htvalid
-        have hn' : (efs.map Prod.fst).Nodup := by rw [hkeys₁]; exact htnodup
+      · have hn' : (efs.map Prod.fst).Nodup := by rw [hkeys₁]; exact htnodup
         simp only [buildOf, hf]
-        exact evalExpr_obj hv' hn' hvs
+        exact evalExpr_obj hn' hvs
       · exact lookup_isSome_keys (hkeys.trans hkeys₁)
       · obtain ⟨τ'', h₁, h₂⟩ := hq l v hv
         rw [hτ'] at h₁; cases h₁; exact h₂
@@ -1014,18 +1005,23 @@ theorem parseBody_static {ctx : Ctx} (hd : DeclsOk ctx) (t : Ty) : JS.staticOk (
     | _ => simp [buildOf, JS.staticOk, JS.atomOk, hj]
   simp [parseBody, JS.staticOk, JS.atomOk, htest, hbuild, hk, hf]
 
-theorem parseFn_eval {ctx : Ctx} {env t ok fa okv failv} (hd : DeclsOk ctx)
+theorem parseFn_eval {ctx : Ctx} {env t ok fa okv failv}
     (hok : JS.evalAtom env (.path ok []) = .ok okv) (hfail : JS.evalAtom env fa = .ok failv) :
     JS.evalExpr 4 env (.entry (parseFn ctx t ok fa)) =
       .ok (.entryOf (.clos (("f", failv) :: ("k", okv) :: env) "j" (parseBody ctx t))) := by
-  have hj : JS.validIdent "j" = true := by decide +kernel
-  have hk : JS.validIdent "k" = true := by decide +kernel
-  have hf : JS.validIdent "f" = true := by decide +kernel
   have hgj : "j" ∉ JS.emittedGlobals := by decide
   have hgk : "k" ∉ JS.emittedGlobals := by decide
   have hgf : "f" ∉ JS.emittedGlobals := by decide
-  have hb := parseBody_static hd t
-  simp [parseFn, JS.evalExpr, JS.staticOk, hok, hfail, hj, hk, hf, hgj, hgk, hgf, hb]
+  simp [parseFn, JS.evalExpr, hok, hfail, hgj, hgk, hgf]
+
+theorem parseFn_static {ctx : Ctx} {t ok fail a b} (hd : DeclsOk ctx) (hok : inferAtom ctx (.var ok) = .ok a)
+    (hfail : inferAtom ctx fail = .ok b) : JS.staticOk (.entry (parseFn ctx t ok (emitAtom fail))) = true := by
+  have hj : JS.validIdent "j" = true := by decide +kernel
+  have hk : JS.validIdent "k" = true := by decide +kernel
+  have hf : JS.validIdent "f" = true := by decide +kernel
+  have hokStatic := inferAtom_static hd hok
+  simp only [emitAtom] at hokStatic
+  simp [parseFn, JS.staticOk, hj, hk, hf, parseBody_static hd t, hokStatic, inferAtom_static hd hfail]
 
 theorem entry_valOf {ctx : Ctx} {env t r okv failv} (hd : DeclsOk ctx) (ht : TyOk ctx.recs t) (hr : isData r = true)
     (hokv : ValOf ctx.recs okv (.fn t r)) (hfailv : ValOf ctx.recs failv r) :
@@ -1035,7 +1031,7 @@ theorem entry_valOf {ctx : Ctx} {env t r okv failv} (hd : DeclsOk ctx) (ht : TyO
   have hj : lookup (("j", jv) :: ("f", failv) :: ("k", okv) :: env) "j" = some jv := by simp [lookup]
   have hf : lookup (("j", jv) :: ("f", failv) :: ("k", okv) :: env) "f" = some failv := by simp [lookup]
   have hk : lookup (("j", jv) :: ("f", failv) :: ("k", okv) :: env) "k" = some okv := by simp [lookup]
-  obtain ⟨b, hb⟩ := testOf_total hd t hj hjv
+  obtain ⟨b, hb⟩ := testOf_total (ctx := ctx) t hj hjv
   cases b with
   | false =>
     refine ⟨2, failv, ?_, hfailv, (hfailv.dataOf hr).data⟩
@@ -1360,7 +1356,8 @@ theorem checkFrom_sound : ∀ (p : Program) {ctx ctx' js env}, checkFrom ctx p =
               cases hdt : isData τ
               · rfl
               · simp [(hvt.dataOf hdt).not_callable]
-            simp only [JS.runFrom, hident, hglobal, Bool.not_true, Bool.false_eq_true, if_false, hnot]
+            simp only [JS.runFrom, hident, checkExpr_static e hc hd hτ, hglobal, Bool.not_true, Bool.false_eq_true,
+              if_false, hnot]
             rw [JS.evalExpr_mono n₁ hv (by simp) _ (Nat.le_max_left _ _)]
             simp only [hno, Bool.false_eq_true, if_false]
             exact JS.runFrom_mono _ hrun (by simp) _ (Nat.le_max_right _ _)
@@ -1377,7 +1374,7 @@ theorem checkFrom_sound : ∀ (p : Program) {ctx ctx' js env}, checkFrom ctx p =
             simp only [TyOk] at ht
             obtain ⟨okv, hokv, hokvt⟩ := inferAtom_sound hok ha
             obtain ⟨failv, hfailv, hfailvt⟩ := inferAtom_sound hfail ha
-            have hpe := parseFn_eval (ctx := ctx) (t := a) hd hokv hfailv
+            have hpe := parseFn_eval (ctx := ctx) (t := a) hokv hfailv
             have hval := entry_valOf (env := env) hd ht.1 hrd hokvt hfailvt
             have hnot : (lookup env x).isSome = false := by rw [← ha.1 x, hfreshv]; rfl
             have hident : JS.validIdent x = true := by simp only [JS.bindable, Bool.and_eq_true] at hvalid; exact hvalid.1
@@ -1391,7 +1388,8 @@ theorem checkFrom_sound : ∀ (p : Program) {ctx ctx' js env}, checkFrom ctx p =
             obtain ⟨n₂, env', hrun, ha', hd', hexp⟩ := ih hrest ha₁ hd₁
             refine ⟨max 4 n₂, env', ?_, ha', hd', fun d hdm hdx => ?_⟩
             · have hno : (x == "then") = false := by simpa using hthen
-              simp only [JS.runFrom, hident, hglobal, Bool.not_true, Bool.false_eq_true, if_false, hnot]
+              simp only [JS.runFrom, hident, parseFn_static (t := a) hd hok hfail, hglobal, Bool.not_true,
+                Bool.false_eq_true, if_false, hnot]
               rw [JS.evalExpr_mono 4 hpe (by simp) _ (Nat.le_max_left _ _)]
               simp only [hno, Bool.and_false, Bool.false_and, Bool.false_eq_true, if_false]
               exact JS.runFrom_mono _ hrun (by simp) _ (Nat.le_max_right _ _)

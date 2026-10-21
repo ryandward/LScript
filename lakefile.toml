@@ -8,3 +8,8 @@ name = "LScript"
 [[lean_exe]]
 name = "lscript"
 root = "Main"
+
+[[lean_exe]]
+name = "difftest"
+root = "Diff"
+srcDir = "test"

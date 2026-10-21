@@ -8,7 +8,7 @@ The compiler emits a module of `const name = value;` lines, each exported or not
 literal, a name, a chain of property reads, an object literal of those, an arrow function, a call of
 one expression with another, or a conditional on one of the tests below. This file models exactly that
 fragment: what each line can evaluate to, and every way it can go wrong. `test/v8.mjs` checks the model
-against Node.
+against Node on cases written by hand, and `test/diff.mjs` on random modules.
 
 * A name that isn't a JavaScript identifier, or is a reserved word, is a SyntaxError. A field label
   may be a reserved word: JavaScript allows those as property names.
@@ -19,10 +19,11 @@ against Node.
 * A string literal is printed between double quotes as it is, so it may hold only printable ASCII
   other than `"` and `\`.
 * Reading a property an object holds as its own gives its value. Reading one it doesn't hold gives
-  `undefined` or something inherited from a prototype, and reading a property of a number, a string or
-  a function gives `undefined`, a method or a length. None of these throws, and the model says only
-  that the value is one it doesn't track (`untracked`). Reading a property of an untracked value
-  throws if the value is `undefined`, so the model refuses it (`unmodeled`).
+  `undefined` or something inherited from a prototype, and reading a property of a number or a string
+  gives `undefined`, a method or a length. None of these throws, and the model says only that the
+  value is one it doesn't track (`untracked`). Reading a property of an untracked value throws if the
+  value is `undefined`, so the model refuses it (`unmodeled`). Reading `caller` or `arguments` of an
+  arrow function throws a TypeError, so the model refuses reading any property of a function.
 * In an object literal, V8 keeps the last of two equal keys, and `__proto__: v` sets the prototype
   instead of making a field. The model refuses both (`unmodeled`): it is stricter than V8, so for any
   module it runs without an error, it agrees with V8.
@@ -38,10 +39,11 @@ against Node.
   they are initialized, so the model is stricter. Calling anything else is a TypeError, or, for a
   method a value inherits, something the model doesn't track; the model refuses both. A parameter
   follows the naming rules of a declaration.
-* V8 parses a function's body along with the rest of the module, so a body that isn't valid syntax is
-  a SyntaxError even if the function is never called. The model checks the body when it evaluates the
-  arrow, which comes to the same thing: every line is evaluated in order, and a module that hits any
-  error gives no claim.
+* V8 parses the whole module before it runs any of it, so a line that isn't valid syntax anywhere, in
+  a branch never taken or in the body of a function never called, is a SyntaxError, and nothing runs.
+  The model checks each line's syntax (`staticOk`) before it runs the line, and evaluation itself
+  checks no syntax. The two differ only for a module that has an error somewhere, and such a module
+  gives no claim.
 * The values `JSON.parse` returns (`IsJson`) are null, booleans, numbers, strings, arrays, and plain
   objects that aren't frozen, each own key once: of two equal keys in the text, the last one stays, and
   `"__proto__"` is an ordinary own key. A number is a safe integer, `-0`, or another double, which
@@ -50,13 +52,15 @@ against Node.
   ASCII label is, and it never looks inside a foreign string.
 * Reading a property of `null` or `undefined` is a TypeError.
 * An entry is the exported function an importer calls with any value. It is printed as
-  `((p) => (input) => p($json(input)))(parse)`, where `$json`, printed once at the top of the module,
+  `((p) => (input) => p($json(input)))(parse)`, where `$json`, printed once at the top of a module that
+  has an entry anywhere in it,
   gives `JSON.parse` of a string inside a `try`, and `undefined` for anything else or for text that
   doesn't parse. The model evaluates the parse function and holds it (`entryOf`); it doesn't call an
   entry, since only importers do, and what an entry promises is said by `ValOf` for every value
   `JSON.parse` returns. That `$json` gives `undefined` or such a value is the trusted step, measured.
 * A module that exports a function named `then` can't be imported with `import()`, which takes the
-  module for a promise and waits on it forever, so the model refuses one.
+  module for a promise and waits on it forever, so the model refuses an exported `then` that holds a
+  function or a value the model doesn't track, which may be a method.
 * A conditional `(t ? a : b)` evaluates its test, then one branch. A test is
   `typeof a === "string"`; `Number.isSafeInteger(a) && !Object.is(a, -0)`, which holds for a safe
   integer and not for `-0`; a shape test, which holds for a plain object whose own keys are exactly the
@@ -135,10 +139,12 @@ inductive Exportable : Val → Prop where
   | data {v} : Data v → Exportable v
   | entry {c} : Exportable (.entryOf c)
 
-/-- A value V8 can call. -/
+/-- A value V8 may be able to call: a function, or a value the model doesn't track, which may be a
+    method it inherits. -/
 def callable : Val → Bool
   | .clos _ _ _ => true
   | .entryOf _ => true
+  | .untracked => true
   | _ => false
 
 inductive Err where
@@ -209,11 +215,13 @@ def validStr (s : String) : Bool :=
   s.toList.all fun c => decide (32 ≤ c.toNat) && decide (c.toNat ≤ 126) && c != '"' && c != '\\'
 
 /-- `v.l`. An object's own field gives its value. Anything else V8 gives without throwing, so the model
-    gives `untracked`; but reading a property of an untracked value throws if it is `undefined`, so the
-    model refuses that. -/
+    gives `untracked`; but reading a property of an untracked value throws if it is `undefined`, and
+    reading `caller` or `arguments` of a function throws, so the model refuses those. -/
 def readField : Val → String → Except Err Val
   | .obj fs _, l => .ok ((lookup fs l).getD .untracked)
   | .untracked, l => .error (.unmodeled s!"reading {l} of a value the model doesn't track, which may be undefined")
+  | .clos _ _ _, l => .error (.unmodeled s!"reading {l} of a function, where caller and arguments throw")
+  | .entryOf _, l => .error (.unmodeled s!"reading {l} of a function, where caller and arguments throw")
   | .null, l => .error (.nullRead l)
   | .undef, l => .error (.nullRead l)
   | _, _ => .ok .untracked
@@ -227,13 +235,11 @@ def readPath : Val → List String → Except Err Val
 
 def evalAtom (env : List (String × Val)) : Atom → Except Err Val
   | .num n => .ok (if isSafe n then .num n else .notInt)
-  | .str s => if validStr s then .ok (.str s) else .error (.syntax s!"string literal {repr s} can't be printed as itself")
+  | .str s => .ok (.str s)
   | .path x ls =>
-    if !ls.all identShape then .error (.syntax s!"a property read from {x} isn't an identifier")
-    else
-      match lookup env x with
-      | some v => readPath v ls
-      | none => .error (.reference x)
+    match lookup env x with
+    | some v => readPath v ls
+    | none => .error (.reference x)
 
 def evalFields (env : List (String × Val)) : List (String × Atom) → Except Err (List (String × Val))
   | [] => .ok []
@@ -299,16 +305,13 @@ def evalExpr : Nat → List (String × Val) → Expr → Except Err Val
   | 0, _, _ => .error .outOfFuel
   | _ + 1, env, .atom a => evalAtom env a
   | _ + 1, env, .obj fs =>
-    if !(fs.map Prod.fst).all validLabel then .error (.unmodeled "a label that isn't a plain identifier, or __proto__, which sets the prototype")
-    else if !decide (fs.map Prod.fst).Nodup then .error (.unmodeled "two equal keys: V8 keeps the last")
+    if !decide (fs.map Prod.fst).Nodup then .error (.unmodeled "two equal keys: V8 keeps the last")
     else
       match evalFields env fs with
       | .ok vs => .ok (.obj vs true)
       | .error e => .error e
   | _ + 1, env, .arrow x body =>
-    if !validIdent x then .error (.syntax s!"{x} is not an identifier")
-    else if emittedGlobals.contains x then .error (.unmodeled s!"{x} shadows a global the emitted code calls")
-    else if !staticOk body then .error (.syntax "the body of an arrow function isn't valid syntax")
+    if emittedGlobals.contains x then .error (.unmodeled s!"{x} shadows a global the emitted code calls")
     else .ok (.clos env x body)
   | n + 1, env, .app f a =>
     match evalExpr n env f with
@@ -340,6 +343,7 @@ def runFrom (n : Nat) (env : List (String × Val)) : Program → Except Err (Lis
   | [] => .ok env
   | d :: ds =>
     if !validIdent d.name then .error (.syntax s!"{d.name} is not an identifier")
+    else if !staticOk d.e then .error (.syntax s!"the line declaring {d.name} isn't valid syntax")
     else if emittedGlobals.contains d.name then .error (.unmodeled s!"{d.name} shadows a global the emitted code calls")
     else if (lookup env d.name).isSome then .error (.syntax s!"{d.name} is declared twice")
     else
@@ -393,9 +397,14 @@ def renderExpr : Expr → String
       | _ => renderExpr b) ++ ")"
   | .entry p => "((p) => (input) => p($json(input)))(" ++ renderExpr p ++ ")"
 
-def isEntry : Expr → Bool
+/-- Whether an entry appears anywhere in the expression. -/
+def hasEntry : Expr → Bool
   | .entry _ => true
-  | _ => false
+  | .arrow _ body => hasEntry body
+  | .app f a => hasEntry f || hasEntry a
+  | .cond _ a b => hasEntry a || hasEntry b
+  | .atom _ => false
+  | .obj _ => false
 
 /-- `JSON.parse` of a string, and `undefined` for anything else or for text that doesn't parse: the
     entries' boundary, printed once at the top of a module that has any. -/
@@ -404,7 +413,7 @@ def jsonHelper : String :=
 
 /-- The text of the module. -/
 def render (p : Program) : String :=
-  (if p.any (fun d => isEntry d.e) then jsonHelper else "") ++
+  (if p.any (fun d => hasEntry d.e) then jsonHelper else "") ++
     joinR (p.map fun d => s!"{if d.exported then "export " else ""}const {d.name} = {renderExpr d.e};\n")
 
 /-! ## Fuel: any result other than running out stays the same with more fuel -/
@@ -477,15 +486,18 @@ theorem runFrom_mono : ∀ (ds : Program) {n env r}, runFrom n env ds = r → r 
         · rename_i h₃; rw [if_pos h₃]; exact h
         · rename_i h₃; rw [if_neg h₃]
           split at h
-          · rename_i v he
-            rw [evalExpr_mono n he (by simp) m hm]
-            dsimp only
+          · rename_i h₄; rw [if_pos h₄]; exact h
+          · rename_i h₄; rw [if_neg h₄]
             split at h
-            · rename_i hc; rw [if_pos hc]; exact h
-            · rename_i hc; rw [if_neg hc]; exact ih h hr m hm
-          · rename_i e he
-            rw [evalExpr_mono n he (fun hx => hr (by rw [← h]; injection hx with hx; rw [hx])) m hm]
-            exact h
+            · rename_i v he
+              rw [evalExpr_mono n he (by simp) m hm]
+              dsimp only
+              split at h
+              · rename_i hc; rw [if_pos hc]; exact h
+              · rename_i hc; rw [if_neg hc]; exact ih h hr m hm
+            · rename_i e he
+              rw [evalExpr_mono n he (fun hx => hr (by rw [← h]; injection hx with hx; rw [hx])) m hm]
+              exact h
 
 theorem applyVal_mono {n c j r} (h : applyVal n c j = r) (hr : r ≠ .error .outOfFuel) (m : Nat) (hm : n ≤ m) :
     applyVal m c j = r := by
@@ -508,15 +520,17 @@ theorem runFrom_keeps : ∀ (ds : Program) {n env env' x v}, runFrom n env ds = 
       · cases h
       · split at h
         · cases h
-        · rename_i hfresh
-          split at h
-          · rename_i w _
-            split at h
-            · cases h
-            · apply ih h
-              have hne : d.name ≠ x := fun e => by subst e; simp [hx] at hfresh
-              simp [lookup, hne, hx]
+        · split at h
           · cases h
+          · rename_i hfresh
+            split at h
+            · rename_i w _
+              split at h
+              · cases h
+              · apply ih h
+                have hne : d.name ≠ x := fun e => by subst e; simp [hx] at hfresh
+                simp [lookup, hne, hx]
+            · cases h
 
 theorem run_mono {n p r} (h : run n p = r) (hr : r ≠ .error .outOfFuel) : ∀ m, n ≤ m → run m p = r :=
   runFrom_mono p h hr

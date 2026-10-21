@@ -30,8 +30,10 @@ What is trusted rather than proved:
 
 - the parser, LScript/Parse.lean, and the native `lscript` binary Lean and clang build from the proved
   functions, unless the run is checked with `certify/check.sh` (below);
-- the model of the emitted JavaScript, LScript/JS.lean, which `test/v8.mjs` checks against Node;
-- the printer, `JS.render`, which `test/run.sh` checks by running every accepted program;
+- the model of the emitted JavaScript, LScript/JS.lean, which `test/v8.mjs` checks against Node on
+  cases written by hand, and `test/diff.mjs` on random modules (below);
+- the printer, `JS.render`, which `test/run.sh` checks by running every accepted program, and
+  `test/diff.mjs` by running generated ones;
 - the built-ins the emitted code calls: `Object.freeze`, and for entries `JSON.parse`, `Array.isArray`,
   `Object.keys`, `Object.hasOwn`, `Number.isSafeInteger` and `Object.is`. Code that runs before the
   module could replace one, and the module trusts that none did. The module itself can't shadow one:
@@ -170,7 +172,7 @@ overflows the kernel's stack.
 A checked run doesn't rest on the parser, the `lscript` binary, or the C toolchain that built it. It
 rests on the printer and the model of V8 together, since `compile_sound` is about the program the
 printer prints and the step from that text to what V8 does is the model's; on `Object.freeze` being
-the built-in, Node behaving as `test/v8.mjs` measures, and calls nesting no deeper than V8's stack
+the built-in, Node behaving as `test/v8.mjs` and `test/diff.mjs` measure, and calls nesting no deeper than V8's stack
 allows; and on the machine it runs on: Lean's
 kernel, Lake's build of the commit, and the files as they were on disk when it ran.
 
@@ -178,6 +180,43 @@ A check is evidence for whoever runs it. The project's job is soundness, not mak
 tamper-proof: someone who wants assurance about a program, an auditor for instance, runs
 `certify/check.sh` themselves on a fresh clone of the commit they reviewed. A result someone else
 reports is only as good as their word.
+
+## The model against Node
+
+`test/v8.mjs` checks the model on cases written by hand, and every break a review found in the model
+was a case no one had written: an importer changing a record, an export named `then`, a body never
+called, a read through `undefined`, a label that isn't an identifier, the depth of V8's stack, and a
+module shadowing a global. `test/diff.mjs` writes the cases instead. `test/Diff.lean` generates random
+modules of the model's fragment, not LScript source, so it reaches rules no accepted program uses yet.
+The model runs each declaration as it is drawn, and one it refuses is drawn again, so every module kept
+is one the model says runs. The names and labels come from the engine rather than from a list: every
+global, every property along the prototype chain of each kind of value the model holds and of a
+promise, the spec's reserved and contextual words, and every identifier the printer writes. Node
+imports each module, compares every export with what the model says it holds, and calls the exported
+functions: closures with built arguments, and entries with JSON text whose parse the generator knows,
+including `-0`, `1e400`, duplicate keys, `"__proto__"` and lone surrogates.
+
+Only one direction counts. Where the model gives an error, V8 may still run the module, and the model
+is only stricter. Where the model gives a value, Node must give the same value.
+
+The first run found four breaks, all in the model or the printer. None was reachable from an accepted
+program, since the checker never emits the shapes involved, and `LScript/Examples.lean` pins each:
+
+- The model checked syntax only where evaluation reached, so a branch never taken could hold text V8
+  can't parse, and V8 refuses the whole module. The model now checks each line's syntax before it runs
+  the line, and evaluation checks none.
+- Reading `caller` or `arguments` of an arrow function throws a TypeError, where the model said the
+  read gave a value it doesn't track. The model now refuses reading any property of a function.
+- An exported `then` holding an inherited method, such as `o.toString`, makes `import()` wait forever,
+  and the model refused only a `then` it knew was a function. It now also refuses a `then` holding a
+  value it doesn't track.
+- An entry below the top of a line was printed without the `$json` helper it calls, since the printer
+  looked only at the top of each line. It now prints the helper when an entry appears anywhere.
+
+With those fixed, 120,000 modules and about 680,000 calls agree. `test/run.sh` runs 10,000 modules on
+a fixed seed, and `SEED` and `COUNT` run others. The generator finds only what it can draw: it builds
+no value the model can't represent, such as a getter, a Proxy or a symbol, except as input to an entry,
+which turns it into `undefined`; and it rarely draws the exact shape of an emitted parse.
 
 ## Checks
 
